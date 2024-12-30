@@ -3,6 +3,8 @@
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
+import sys
+sys.path.append("../../src")
 
 import asyncio
 import os
@@ -18,6 +20,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask
 from pipecat.services.cartesia import CartesiaTTSService
+from pipecat.services.elevenlabs import ElevenLabsTTSService
 from pipecat.transports.services.daily import DailyParams, DailyTransport
 
 load_dotenv(override=True)
@@ -34,9 +37,14 @@ async def main():
             room_url, None, "Say One Thing", DailyParams(audio_out_enabled=True)
         )
 
-        tts = CartesiaTTSService(
-            api_key=os.getenv("CARTESIA_API_KEY"),
-            voice_id="79a125e8-cd45-4c13-8a67-188112f4dd22",  # British Lady
+        # tts = CartesiaTTSService(
+        #     api_key=os.getenv("CARTESIA_API_KEY") or "sk_car_z1y3lIJljARkhPvE3rtvI",
+        #     voice_id="79a125e8-cd45-4c13-8a67-188112f4dd22",  # British Lady
+        # )
+
+        tts = ElevenLabsTTSService(
+            api_key=os.getenv("ELEVENLABS_API_KEY") or "sk_ecad360f5b4888588632a9dc64eedfdb4e1f6c44d3dcb1bd",
+            voice_id="29vD33N1CtxCmqQRPOHJ",
         )
 
         runner = PipelineRunner()
@@ -49,7 +57,7 @@ async def main():
         async def on_first_participant_joined(transport, participant):
             participant_name = participant.get("info", {}).get("userName", "")
             await task.queue_frames(
-                [TTSSpeakFrame(f"Hello there, {participant_name}!"), EndFrame()]
+                [TTSSpeakFrame(f"Hello there, nice to meet you, how are you doing?"), EndFrame()]
             )
 
         await runner.run(task)
