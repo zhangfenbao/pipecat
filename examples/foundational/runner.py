@@ -3,6 +3,8 @@
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
+import sys
+sys.path.append("../../src")
 
 import argparse
 import os
@@ -14,6 +16,7 @@ from pipecat.transports.services.helpers.daily_rest import DailyRESTHelper
 
 async def configure(aiohttp_session: aiohttp.ClientSession):
     (url, token, _) = await configure_with_args(aiohttp_session)
+    print(url, token)
     return (url, token)
 
 
@@ -35,8 +38,8 @@ async def configure_with_args(
 
     args, unknown = parser.parse_known_args()
 
-    url = args.url or os.getenv("DAILY_SAMPLE_ROOM_URL")
-    key = args.apikey or os.getenv("DAILY_API_KEY")
+    url = args.url or os.getenv("DAILY_SAMPLE_ROOM_URL") or "https://minifold.daily.co/minifold"
+    key = args.apikey or os.getenv("DAILY_API_KEY") or "bab5cceffcce74da58f413d69ba45f0bd5e30c856b39fd3803cf2998bad92096"
 
     if not url:
         raise Exception(
