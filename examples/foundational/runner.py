@@ -39,7 +39,7 @@ async def configure_with_args(
 
     args, unknown = parser.parse_known_args()
 
-    url = args.url or os.getenv("DAILY_SAMPLE_ROOM_URL") or "https://minifold.daily.co/minifold"
+    url = args.url or os.getenv("DAILY_SAMPLE_ROOM_URL") or "https://minifold.daily.co/test"
     key = args.apikey or os.getenv("DAILY_API_KEY") or "bab5cceffcce74da58f413d69ba45f0bd5e30c856b39fd3803cf2998bad92096"
 
     if not url:
