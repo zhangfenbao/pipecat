@@ -264,6 +264,7 @@ class ByteDanceTTSService(WordTTSService):
             logger.error(f"{self} exception: {e}")
 
 class ByteDanceSTTService(STTService):
+    #这个实现有问题，只能单轮stt，不能持续
     def __init__(
         self,
         *,
