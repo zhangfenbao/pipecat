@@ -7,3 +7,4 @@ ruff~=0.8.3
 setuptools~=75.6.0
 setuptools_scm~=8.1.0
 python-dotenv~=1.0.1
+agora_python_server_sdk~=2.1.7
