@@ -29,7 +29,7 @@ from agora.rtc.agora_base import (
     AudioScenarioType,
     RTCConnConfig,
     ClientRoleType,
-    ChannelProfileType, PcmAudioFrame, ExternalVideoFrame)
+    ChannelProfileType, PcmAudioFrame, ExternalVideoFrame, SenderOptions)
 from agora.rtc.agora_service import AgoraService
 from agora.rtc.rtc_connection_observer import IRTCConnectionObserver
 from agora.rtc.audio_pcm_data_sender import AudioPcmDataSender
@@ -47,6 +47,7 @@ class AgoraParams(TransportParams):
     room_id: str = ""
     uid: int = 0
     app_certificate: str = ""  # 用于生成 token
+    video_enabled: bool = False  # 添加视频使能控制
 
 class AgoraCallbacks(BaseModel):
     # 基础事件回调
@@ -141,6 +142,7 @@ class AgoraTransportClient:
                 client_role_type=ClientRoleType.CLIENT_ROLE_BROADCASTER,
                 channel_profile=ChannelProfileType.CHANNEL_PROFILE_LIVE_BROADCASTING,
             )
+            logger.debug(f"RTCConnConfig: {conn_config}")
             # 2. 创建 RTC 连接
             self._connection = self._agora_service.create_rtc_connection(conn_config)
             if not self._connection:
@@ -153,7 +155,6 @@ class AgoraTransportClient:
             self._connection.register_observer(self._observer)
 
             logger.info(f"Connecting to Agora room {self._room_id} with uid {self._participant_id}")
-            logger.debug(f"Using token: {self._token}")
 
             # 4. 建立与频道的连接
             ret = self._connection.connect(
@@ -170,7 +171,7 @@ class AgoraTransportClient:
             await self._create_and_publish_tracks()
             logger.info("Successfully connected to Agora channel")
             self._connected = True
-            if self._callbacks.on_connected:
+            if self._callbacks and getattr(self._callbacks, 'on_connected', None):
                 await self._callbacks.on_connected()
 
         except Exception as e:
@@ -230,10 +231,14 @@ class AgoraTransportClient:
             logger.error(f"Error initializing media senders: {e}")
             raise
 
-    def _create_and_publish_tracks(self):
+    async def _create_and_publish_tracks(self):
         """创建并发布媒体轨道"""
         try:
-            # 创建音频轨道（PCM）
+            # 检查 self._audio_sender 类型
+            logger.debug(f"Audio sender: {self._audio_sender}")
+            logger.debug(f"Audio sender type: {type(self._audio_sender)}")
+
+            # 创建音频轨道（PCM）- 这些创建方法可能不是异步的
             self._audio_track_pcm = self._agora_service.create_custom_audio_track_pcm(self._pcm_data_sender)
             if not self._audio_track_pcm:
                 logger.error("create audio track pcm failed")
@@ -245,29 +250,51 @@ class AgoraTransportClient:
                 logger.error("create audio track encoded failed")
                 return
 
-            # 创建视频轨道（YUV）
-            self._video_track_frame = self._agora_service.create_custom_video_track_frame(self._video_sender)
-            if not self._video_track_frame:
-                logger.error("create video track frame failed")
-                return
+            # 只有在启用视频时才创建视频轨道
+            if getattr(self._params, 'video_enabled', False):
+                if self._video_sender:
+                    self._video_track_frame = self._agora_service.create_custom_video_track_frame(self._video_sender)
+                    if not self._video_track_frame:
+                        logger.error("create video track frame failed")
+                        return
 
-            # 创建视频轨道（已编码）
-            self._video_track_encoded = self._agora_service.create_custom_video_track_encoded(
-                self._video_encoded_sender, {})
-            if not self._video_track_encoded:
-                logger.error("create video track encoded failed")
-                return
+                if self._video_encoded_sender:
+                    video_encode_config = {
+                        'codec_type': 1,
+                        'width': 640,
+                        'height': 480,
+                        'frame_rate': 15,
+                        'bitrate': 0,
+                        'orientationMode': 0,
+                        'mirror_mode': 0,
+                        'cc_mode': 1
+                    }
+                    self._video_track_encoded = self._agora_service.create_custom_video_track_encoded(
+                        self._video_encoded_sender, video_encode_config)
+                    if not self._video_track_encoded:
+                        logger.error("create video track encoded failed")
+                        return
 
-            # 启用轨道
-            self._audio_track_pcm.set_enabled(1)
-            self._video_track_frame.set_enabled(1)
+            # 启用音频轨道 - set_enabled 可能不是异步的
+            if self._audio_track_pcm:
+                self._audio_track_pcm.set_enabled(1)
+
+            # 如果视频轨道存在且视频功能启用，则启用视频轨道
+            if self._video_track_frame and getattr(self._params, 'video_enabled', False):
+                self._video_track_frame.set_enabled(1)
 
             # 获取本地用户并发布轨道
             self._local_user = self._connection.get_local_user()
             if self._local_user:
-                self._local_user.publish_audio(self._audio_track_pcm)
-                self._local_user.publish_video(self._video_track_frame)
-                logger.info("Successfully published audio and video tracks")
+                if self._audio_track_pcm:
+                    self._local_user.publish_audio(self._audio_track_pcm)  # 这个方法可能不是异步的
+                if self._video_track_frame and getattr(self._params, 'video_enabled', False):
+                    self._local_user.publish_video(self._video_track_frame)  # 这个方法可能不是异步的
+                logger.info("Successfully published audio tracks")
+
+                # 回调仍然是异步的
+                if self._callbacks and getattr(self._callbacks, 'on_audio_started', None):
+                    await self._callbacks.on_audio_started(self._participant_id)
             else:
                 logger.error("Failed to get local user")
 
@@ -367,6 +394,12 @@ class AgoraTransportClient:
     async def cleanup(self):
         """清理资源"""
         try:
+            # 先停止所有媒体轨道
+            if self._video_track_frame:
+                self._video_track_frame.set_enabled(0)
+            if self._audio_track_pcm:
+                self._audio_track_pcm.set_enabled(0)
+
             await self.disconnect()
             # 清理媒体轨道
             self._audio_track_pcm = None
