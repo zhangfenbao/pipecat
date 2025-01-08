@@ -3,9 +3,11 @@ from asyncio import Event
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, List, Optional
 import time
-from agora.rtc.video_frame_sender import VideoFrameSender
 from pydantic import BaseModel
 from loguru import logger
+import os
+
+os.makedirs("log_folder", exist_ok=True)
 
 from pipecat.frames.frames import (
     AudioRawFrame,
@@ -29,18 +31,26 @@ from agora.rtc.agora_base import (
     AudioScenarioType,
     RTCConnConfig,
     ClientRoleType,
-    ChannelProfileType, PcmAudioFrame, ExternalVideoFrame, SenderOptions)
+    ChannelProfileType, PcmAudioFrame, ExternalVideoFrame, AudioFrame, VideoFrame, VideoEncoderConfiguration,
+    VideoDimensions, SenderOptions, TCcMode, VideoCodecType, AudioSubscriptionOptions)
 from agora.rtc.agora_service import AgoraService
 from agora.rtc.rtc_connection_observer import IRTCConnectionObserver
 from agora.rtc.audio_pcm_data_sender import AudioPcmDataSender
+from agora.rtc.audio_frame_observer import IAudioFrameObserver
+from agora.rtc.video_frame_observer import IVideoFrameObserver
+from agora.rtc.video_frame_sender import VideoFrameSender
+from agora.rtc.video_encoded_frame_observer import IVideoEncodedFrameObserver
+
 
 @dataclass
 class AgoraTransportMessageFrame(TransportMessageFrame):
     participant_id: str | None = None
 
+
 @dataclass
 class AgoraTransportMessageUrgentFrame(TransportMessageUrgentFrame):
     participant_id: str | None = None
+
 
 class AgoraParams(TransportParams):
     app_id: str = ""
@@ -49,33 +59,35 @@ class AgoraParams(TransportParams):
     app_certificate: str = ""  # 用于生成 token
     video_enabled: bool = False  # 添加视频使能控制
 
+
 class AgoraCallbacks(BaseModel):
     # 基础事件回调
     on_connected: Callable[[], Awaitable[None]]
     on_disconnected: Callable[[], Awaitable[None]]
     on_error: Callable[[str], Awaitable[None]]
-    
+
     # 参与者相关事件
     on_participant_joined: Callable[[str], Awaitable[None]]
     on_participant_left: Callable[[str], Awaitable[None]]
     on_first_participant_joined: Callable[[str], Awaitable[None]]
-    
+
     # 消息事件
     on_message_received: Callable[[Any, str], Awaitable[None]]
-    
+
     # 音频事件
     on_audio_started: Callable[[str], Awaitable[None]]
     on_audio_stopped: Callable[[str], Awaitable[None]]
 
+
 class AgoraTransportClient:
     def __init__(
-        self,
-        app_id: str,
-        room_id: str,
-        token: str,
-        params: AgoraParams,
-        callbacks: AgoraCallbacks,
-        loop: None,
+            self,
+            app_id: str,
+            room_id: str,
+            token: str,
+            params: AgoraParams,
+            callbacks: AgoraCallbacks,
+            loop: None,
     ):
         self._room_id = room_id
         self._token = token
@@ -102,6 +114,11 @@ class AgoraTransportClient:
         self._video_track_encoded = None
         self._local_user = None
 
+        # 添加帧观察器相关的属性
+        self._audio_frame_observer = None
+        self._video_frame_observer = None
+        self._video_encoded_observer = None
+
         try:
             self._agora_service = AgoraService()
             config = AgoraServiceConfig()
@@ -121,6 +138,9 @@ class AgoraTransportClient:
             # 初始化媒体发送器
             self._init_media_senders()
 
+            # 初始化帧观察器
+            self._init_frame_observers()
+
             logger.debug(f"Agora service initialization succeeded")
         except Exception as e:
             raise Exception(f"Failed to initialize Agora service: {str(e)}")
@@ -139,24 +159,27 @@ class AgoraTransportClient:
         try:
             # 1. 创建 RTCConnection 配置
             conn_config = RTCConnConfig(
+                auto_subscribe_audio=1,
                 client_role_type=ClientRoleType.CLIENT_ROLE_BROADCASTER,
                 channel_profile=ChannelProfileType.CHANNEL_PROFILE_LIVE_BROADCASTING,
+                audio_subs_options=AudioSubscriptionOptions(
+                    pcm_data_only=0,
+                    bytes_per_sample=2,
+                    number_of_channels=1,
+                    sample_rate_hz=16000
+                ),
             )
-            logger.debug(f"RTCConnConfig: {conn_config}")
             # 2. 创建 RTC 连接
             self._connection = self._agora_service.create_rtc_connection(conn_config)
             if not self._connection:
                 raise Exception("create connection failed")
-            else:
-                logger.info(f"Agora connection established: {self._connection}")
 
-            # 3. 注册连接观察者
+            # 3. 注册连接观察者并建立连接
             self._observer = AGORAConnectionObserver()
             self._connection.register_observer(self._observer)
 
             logger.info(f"Connecting to Agora room {self._room_id} with uid {self._participant_id}")
 
-            # 4. 建立与频道的连接
             ret = self._connection.connect(
                 token=self._token,
                 chan_id=self._room_id,
@@ -164,10 +187,9 @@ class AgoraTransportClient:
             )
 
             if ret < 0:
-                error_msg = f"Connect failed with code: {ret}"
-                logger.error(error_msg)
                 raise Exception(f"connect failed: {ret}")
-            # 创建和发布媒体轨道
+
+            # 4. 创建和发布媒体轨道
             await self._create_and_publish_tracks()
             logger.info("Successfully connected to Agora channel")
             self._connected = True
@@ -189,9 +211,14 @@ class AgoraTransportClient:
             return
         try:
             logger.info(f"Disconnecting from room {self._room_id}")
+            # 注销帧观察器
+            if self._local_user:
+                if self._audio_frame_observer:
+                    self._local_user.unregister_audio_frame_observer()
+
             if self._connection:
                 self._connection.disconnect()
-                self._connection.unregister_observer(self._observer)
+                self._connection.unregister_observer()
                 self._connection = None
             self._connected = False
             await self._callbacks.on_disconnected()
@@ -231,14 +258,23 @@ class AgoraTransportClient:
             logger.error(f"Error initializing media senders: {e}")
             raise
 
+    def _init_frame_observers(self):
+        """初始化帧观察器"""
+        try:
+            # 创建帧观察器实例
+            self._audio_frame_observer = SampleAudioFrameObserver()
+            self._video_frame_observer = SampleVideoFrameObserver()
+            self._video_encoded_observer = SampleVideoEncodedFrameObserver()
+
+            logger.info("帧观察器初始化成功")
+        except Exception as e:
+            logger.error(f"初始化帧观察器时出错: {e}")
+            raise
+
     async def _create_and_publish_tracks(self):
         """创建并发布媒体轨道"""
         try:
-            # 检查 self._audio_sender 类型
-            logger.debug(f"Audio sender: {self._audio_sender}")
-            logger.debug(f"Audio sender type: {type(self._audio_sender)}")
-
-            # 创建音频轨道（PCM）- 这些创建方法可能不是异步的
+            # 1.创建音频轨道（PCM）- 这些创建方法可能不是异步的
             self._audio_track_pcm = self._agora_service.create_custom_audio_track_pcm(self._pcm_data_sender)
             if not self._audio_track_pcm:
                 logger.error("create audio track pcm failed")
@@ -259,18 +295,13 @@ class AgoraTransportClient:
                         return
 
                 if self._video_encoded_sender:
-                    video_encode_config = {
-                        'codec_type': 1,
-                        'width': 640,
-                        'height': 480,
-                        'frame_rate': 15,
-                        'bitrate': 0,
-                        'orientationMode': 0,
-                        'mirror_mode': 0,
-                        'cc_mode': 1
-                    }
+                    _sender_options = SenderOptions(
+                        cc_mode=TCcMode.CC_ENABLED,
+                        codec_type=VideoCodecType.VIDEO_CODEC_H264,
+                        target_bitrate=640)
+                    # 确保不设置 cc_mode
                     self._video_track_encoded = self._agora_service.create_custom_video_track_encoded(
-                        self._video_encoded_sender, video_encode_config)
+                        self._video_encoded_sender, _sender_options)
                     if not self._video_track_encoded:
                         logger.error("create video track encoded failed")
                         return
@@ -286,18 +317,30 @@ class AgoraTransportClient:
             # 获取本地用户并发布轨道
             self._local_user = self._connection.get_local_user()
             if self._local_user:
-                if self._audio_track_pcm:
-                    self._local_user.publish_audio(self._audio_track_pcm)  # 这个方法可能不是异步的
-                if self._video_track_frame and getattr(self._params, 'video_enabled', False):
-                    self._local_user.publish_video(self._video_track_frame)  # 这个方法可能不是异步的
-                logger.info("Successfully published audio tracks")
-
-                # 回调仍然是异步的
+                # 设置音频参数
+                self._local_user.set_playback_audio_frame_before_mixing_parameters(1, 16000)
+                # 注册观察器
+                if self._audio_frame_observer:
+                    ret = self._local_user.register_audio_frame_observer(
+                        observer=self._audio_frame_observer,
+                        enable_vad=0,
+                        vad_configure=None
+                    )
+                    if ret < 0:
+                        logger.error("register_audio_frame_observer failed")
+                        return
+                # 注册视频观察器（如果启用）
+                if getattr(self._params, 'video_enabled', False):
+                    if self._video_frame_observer:
+                        self._local_user.register_video_frame_observer(self._video_frame_observer)
+                    if self._video_encoded_observer:
+                        self._local_user.register_video_encoded_frame_observer(self._video_encoded_observer)
+                # 触发音频开始回调
                 if self._callbacks and getattr(self._callbacks, 'on_audio_started', None):
                     await self._callbacks.on_audio_started(self._participant_id)
+                logger.info("Successfully registered all observers and set parameters")
             else:
                 logger.error("Failed to get local user")
-
         except Exception as e:
             logger.error(f"Error in creating and publishing tracks: {e}")
             raise
@@ -335,7 +378,7 @@ class AgoraTransportClient:
             frame_buf = None
 
     # 发送 YUV 视频数据
-    async def push_yuv_data_from_file(self,width, height, fps, video_sender: VideoFrameSender, video_file_path,
+    async def push_yuv_data_from_file(self, width, height, fps, video_sender: VideoFrameSender, video_file_path,
                                       _exit: Event):
         with open(video_file_path, "rb") as video_file:
             yuv_sendinterval = 1.0 / fps
@@ -366,7 +409,7 @@ class AgoraTransportClient:
         """发送消息到房间或特定参与者"""
         if not self._connected:
             return
-            
+
         try:
             # TODO: 实现实际的消息发送逻辑
             logger.debug(f"Sending message to {participant_id if participant_id else 'all'}")
@@ -416,9 +459,14 @@ class AgoraTransportClient:
             # 清理声网服务
             if self._agora_service:
                 self._agora_service.release()
+            # 清理帧观察器
+            self._audio_frame_observer = None
+            self._video_frame_observer = None
+            self._video_encoded_observer = None
             logger.info("Successfully cleaned up all resources")
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
+
 
 class AgoraInputTransport(BaseInputTransport):
     def __init__(self, client: AgoraTransportClient, params: AgoraParams, **kwargs):
@@ -458,7 +506,73 @@ class AgoraInputTransport(BaseInputTransport):
             except Exception as e:
                 logger.error(f"Error in audio task: {e}")
 
-#!env python
+
+class SampleAudioFrameObserver(IAudioFrameObserver):
+    def __init__(self, save_to_disk=True):
+        super().__init__()
+        self.save_to_disk = save_to_disk
+
+    def on_record_audio_frame(self, agora_local_user, channelId, frame):
+        logger.info(f"on_record_audio_frame")
+        return 0
+
+    def on_playback_audio_frame(self, agora_local_user, channelId, frame):
+        logger.info(f"on_playback_audio_frame")
+        return 0
+
+    def on_ear_monitoring_audio_frame(self, agora_local_user, frame):
+        logger.info(f"on_ear_monitoring_audio_frame")
+        return 0
+
+    def on_playback_audio_frame_before_mixing(self, agora_local_user, channelId, uid, audio_frame: AudioFrame,
+                                              vad_result_state: int, vad_result_bytearray: bytearray):
+        """处理混音前的音频帧"""
+        logger.info(f"接收到混音前的音频帧: channel={channelId}, uid={uid}")
+        try:
+            if self.save_to_disk:
+                file_path = os.path.join("log_folder", f"{channelId}_{str(uid)}.pcm")
+                if audio_frame and hasattr(audio_frame, 'buffer') and audio_frame.buffer:
+                    with open(file_path, "ab") as f:
+                        f.write(audio_frame.buffer)
+                    logger.debug(f"保存音频数据到: {file_path}")
+            return True
+        except Exception as e:
+            logger.error(f"处理音频帧错误: {e}")
+            return False
+
+
+class SampleVideoFrameObserver(IVideoFrameObserver):
+    def on_frame(self,
+                 channel_id,
+                 remote_uid,
+                 frame: VideoFrame) -> int:
+        """处理原始YUV格式的视频帧"""
+        file_path = os.path.join("log_folder", channel_id + "_" + remote_uid + ".yuv")
+
+        # 计算Y、U、V分量的大小
+        y_size = frame.y_stride * frame.height
+        uv_size = (frame.u_stride * frame.height // 2)
+
+        with open(file_path, "ab") as f:
+            f.write(frame.y_buffer[:y_size])
+            f.write(frame.u_buffer[:uv_size])
+            f.write(frame.v_buffer[:uv_size])
+        return 1
+
+
+class SampleVideoEncodedFrameObserver(IVideoEncodedFrameObserver):
+    def on_encoded_video_frame(self,
+                               uid,
+                               image_buffer,
+                               length,
+                               video_encoded_frame_info) -> int:
+        """处理编码后的视频帧"""
+        file_path = os.path.join("log_folder", str(uid) + ".h264")
+
+        with open(file_path, "ab") as f:
+            f.write(image_buffer[:length])
+        return 1
+
 
 class Pacer:
     def __init__(self, interval):
@@ -534,6 +648,7 @@ class AGORAConnectionObserver(IRTCConnectionObserver):
         """网络类型变化回调"""
         logger.info(f"Network type changed to: {network_type}")
 
+
 class AgoraOutputTransport(BaseOutputTransport):
     def __init__(self, client: AgoraTransportClient, params: AgoraParams, **kwargs):
         super().__init__(params, **kwargs)
@@ -557,14 +672,15 @@ class AgoraOutputTransport(BaseOutputTransport):
             participant_id = frame.participant_id
         await self._client.send_message(frame.message, participant_id)
 
+
 class AgoraTransport(BaseTransport):
     def __init__(
-        self,
-        token: str,
-        params: AgoraParams = AgoraParams(),
-        input_name: str | None = None,
-        output_name: str | None = None,
-        loop: asyncio.AbstractEventLoop | None = None,
+            self,
+            token: str,
+            params: AgoraParams = AgoraParams(),
+            input_name: str | None = None,
+            output_name: str | None = None,
+            loop: asyncio.AbstractEventLoop | None = None,
     ):
         # 确保有一个有效的事件循环
         if loop is None:
