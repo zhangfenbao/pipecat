@@ -19,7 +19,10 @@ from pipecat.frames.frames import EndFrame, TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask
-from pipecat.services.bytedance import ByteDanceTTSService
+# from pipecat.services.bytedance import ByteDanceTTSService
+from pipecat.services.fish import FishAudioTTSService
+from pipecat.transcriptions.language import Language
+from pipecat.services.azure import AzureTTSService
 from pipecat.transports.services.daily import DailyParams, DailyTransport
 
 load_dotenv(override=True)
@@ -36,16 +39,32 @@ async def main():
             room_url, None, "Say One Thing", DailyParams(audio_out_enabled=True)
         )
 
-        tts = ByteDanceTTSService(
-            app_id=os.getenv("VOLC_APP_ID"),
-            access_token=os.getenv("VOLC_ACCESS_TOKEN"),
-            params=ByteDanceTTSService.InputParams(
-                voice_type="zh_male_M392_conversation_wvae_bigtts",  # 使用中文男声
-                speed_ratio=1.0,
-                volume_ratio=1.0,
-                pitch_ratio=1.0,
-                debug=True
-            )
+        # tts = ByteDanceTTSService(
+        #     app_id=os.getenv("VOLC_APP_ID"),
+        #     access_token=os.getenv("VOLC_ACCESS_TOKEN"),
+        #     params=ByteDanceTTSService.InputParams(
+        #         voice_type="zh_male_M392_conversation_wvae_bigtts",  # 使用中文男声
+        #         speed_ratio=1.0,
+        #         volume_ratio=1.0,
+        #         pitch_ratio=1.0,
+        #         debug=True
+        #     )
+        # )
+        # print(os.getenv("FISH_AUDIO_API_KEY"))
+        # tts = FishAudioTTSService(
+        #     api_key=os.getenv("FISH_AUDIO_API_KEY"),
+        #     model="aebaa2305aa2452fbdc8f41eec852a79",
+        #     params=FishAudioTTSService.InputParams(
+        #         language=Language.ZH_CN,
+        #         latency="normal",
+        #         prosody_speed=1.0,
+        #     )
+        # )
+
+        tts = AzureTTSService(
+            api_key=os.getenv("AZURE_SPEECH_API_KEY"),
+            region=os.getenv("AZURE_SPEECH_REGION"),
+            voice="zh-CN-XiaoxiaoMultilingualNeural",
         )
 
         runner = PipelineRunner()
@@ -58,7 +77,7 @@ async def main():
         async def on_first_participant_joined(transport, participant):
             participant_name = participant.get("info", {}).get("userName", "")
             await task.queue_frames(
-                [TTSSpeakFrame("你好，很高兴见到你，你今天感觉如何？"), EndFrame()]  # 使用中文问候语
+                [TTSSpeakFrame("同学们，我们现在开始学习一元二次方程"), EndFrame()]  # 使用中文问候语
             )
 
         await runner.run(task)
