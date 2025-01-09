@@ -6,7 +6,7 @@ import time
 from pydantic import BaseModel
 from loguru import logger
 import os
-
+import numpy as np
 os.makedirs("log_folder", exist_ok=True)
 
 from pipecat.frames.frames import (
@@ -317,6 +317,8 @@ class AgoraTransportClient:
             # 获取本地用户并发布轨道
             self._local_user = self._connection.get_local_user()
             if self._local_user:
+                if self._audio_track_pcm:
+                    self._local_user.publish_audio(self._audio_track_pcm)
                 # 设置音频参数
                 self._local_user.set_playback_audio_frame_before_mixing_parameters(1, 16000)
                 # 注册观察器
@@ -507,6 +509,47 @@ class AgoraInputTransport(BaseInputTransport):
                 logger.error(f"Error in audio task: {e}")
 
 
+def apply_audio_gain(audio_frame, gain):
+    """对音频帧数据进行增益处理"""
+    try:
+        # 将bytearray转换为numpy数组
+        samples = np.frombuffer(audio_frame.buffer, dtype=np.int16)
+
+        # 应用增益
+        samples = samples.astype(np.float32) * gain
+
+        # 裁剪到16位整数范围
+        samples = np.clip(samples, -32768, 32767)
+
+        # 转回16位整数
+        samples = samples.astype(np.int16)
+
+        # 创建新的buffer
+        new_buffer = bytearray(samples.tobytes())
+
+        # 创建新的AudioFrame对象，复制所有属性
+        new_frame = AudioFrame(
+            type=audio_frame.type,
+            samples_per_channel=audio_frame.samples_per_channel,
+            bytes_per_sample=audio_frame.bytes_per_sample,
+            channels=audio_frame.channels,
+            samples_per_sec=audio_frame.samples_per_sec,
+            buffer=new_buffer,
+            render_time_ms=audio_frame.render_time_ms,
+            avsync_type=audio_frame.avsync_type,
+            far_field_flag=audio_frame.far_field_flag,
+            rms=audio_frame.rms,
+            voice_prob=audio_frame.voice_prob,
+            music_prob=audio_frame.music_prob,
+            pitch=audio_frame.pitch
+        )
+
+        return new_frame
+    except Exception as e:
+        logger.error(f"音频增益处理失败: {e}")
+        return audio_frame
+
+
 class SampleAudioFrameObserver(IAudioFrameObserver):
     def __init__(self, save_to_disk=True):
         super().__init__()
@@ -532,13 +575,27 @@ class SampleAudioFrameObserver(IAudioFrameObserver):
             if self.save_to_disk:
                 file_path = os.path.join("log_folder", f"{channelId}_{str(uid)}.pcm")
                 if audio_frame and hasattr(audio_frame, 'buffer') and audio_frame.buffer:
+                    # 添加音频帧信息日志
+                    logger.info(f"接收到音频帧: samples={audio_frame.samples_per_channel}, "
+                                f"channels={audio_frame.channels}, "
+                                f"sample_rate={audio_frame.samples_per_sec}, "
+                                f"buffer_size={len(audio_frame.buffer)}")
+                    # 检查音频帧数据是否有效
+                    if len(audio_frame.buffer) == 0:
+                        logger.warning("音频帧数据为空")
+                        return False
+                    # 应用自定义倍增益
+                    audio_frame = apply_audio_gain(audio_frame, gain=2.5)
+                    # 保存音频帧数据
                     with open(file_path, "ab") as f:
                         f.write(audio_frame.buffer)
-                    logger.debug(f"保存音频数据到: {file_path}")
-            return True
+                    # 记录写入文件的大小
+                    logger.info(f"写入PCM文件: {file_path}, 数据大小: {len(audio_frame.buffer)} bytes")
+                else:
+                    logger.warning("无效的音频帧数据")
         except Exception as e:
-            logger.error(f"处理音频帧错误: {e}")
-            return False
+            logger.error(f"保存PCM文件错误: {e}")
+        return True
 
 
 class SampleVideoFrameObserver(IVideoFrameObserver):

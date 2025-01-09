@@ -1,4 +1,5 @@
 import asyncio
+import os
 from asyncio import Event
 
 from loguru import logger
@@ -34,12 +35,17 @@ async def on_audio_started(participant_id: str):
 async def on_audio_stopped(participant_id: str):
     logger.info(f"Audio stopped for participant: {participant_id}")
 
+async def on_audio_frame(participant_id: str, audio_frame):
+    logger.info(f"收到音频帧 - 参与者: {participant_id}")
+    logger.info(f"音频帧详情: samples={getattr(audio_frame, 'samples_per_channel', 'N/A')}, "
+               f"bytes={getattr(audio_frame, 'bytes_per_sample', 'N/A')}")
+
 async def main():
     # Agora 配置
     app_id = "cb7e1cfa8fc043879d4449780763020f"  # 替换为你的 App ID
     room_id = "test_room"
 
-    token = "007eJxTYOBfffL3lZJpjFErOGQfZ6XeZxL5a/pYzPnSYucPbK/Y2G8oMCQnmacaJqclWqQlG5gYW5hbppiYmFiaWxiYmxkbGBmksRRVpzcEMjKoJuswMEIhiM/JUJJaXBJflJ+fy8AAAJv+H1w="  # 替换为你的 Token
+    token = "007eJxTYPi/84D9Ju6X/1md1urZai/Zdpnvuo2k7nPTzUd+Ks1NWc2mwJCcZJ5qmJyWaJGWbGBibGFumWJiYmJpbmFgbmZsYGSQ9sOoPr0hkJHhfMtVFkYGCATxORlKUotL4ovy83MZGAApJiJQ"  # 替换为你的 Token
 
     # 创建 AgoraParams
     params = AgoraParams(
@@ -67,34 +73,44 @@ async def main():
     transport.on_message_received = on_message_received
     transport.on_audio_started = on_audio_started
     transport.on_audio_stopped = on_audio_stopped
+    transport.on_audio_frame = on_audio_frame
 
     try:
         # 启动连接
         logger.info("Connecting to Agora room...")
         await transport._client.connect()
-        logger.info("Connected. Sending audio...")
         # 准备发送 PCM 音频数据
-        audio_file_path = "/home/qcc_python/test_data_202408221437/test_data/demo.pcm"  # 替换为你的 PCM 音频文件路径
+        audio_file_path = "/home/python_workspace/pipecat/log_folder/test_room_3021077768.pcm"  # 替换为你的 PCM 音频文件路径
+        # audio_file_path = "/home/qcc_python/test_data_202408221437/test_data/demo.pcm"  # 替换为你的 PCM 音频文件路径
         sample_rate = 16000  # 替换为你的音频采样率
         num_of_channels = 1  # 替换为音频的声道数量
         _exit_event = Event()
 
         if transport._client._connected:
             logger.info("Connected. Sending audio...")
-            # 发送音频数据
-            await transport._client.push_pcm_data_from_file(
-                sample_rate=sample_rate,
-                num_of_channels=num_of_channels,
-                pcm_data_sender=transport._client._pcm_data_sender,
-                audio_file_path=audio_file_path,
-                _exit=_exit_event
-            )
+            try:
+                file_size = os.path.getsize(audio_file_path)
+                logger.info(f"准备发送音频文件，大小: {file_size} bytes")
+
+                await transport._client.push_pcm_data_from_file(
+                    sample_rate=sample_rate,
+                    num_of_channels=num_of_channels,
+                    pcm_data_sender=transport._client._pcm_data_sender,
+                    audio_file_path=audio_file_path,
+                    _exit=_exit_event
+                )
+                logger.info("音频发送完成")
+
+                # 等待一段时间确保音频发送完成
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(f"发送音频时出错: {e}")
         else:
             logger.error("Failed to connect to Agora room")
 
     except Exception as e:
         logger.error(f"Test failed: {e}")
-    # finally:
+    finally:
         # 清理资源
         await transport._client.cleanup()
 
