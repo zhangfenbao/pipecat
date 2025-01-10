@@ -45,7 +45,7 @@ async def main():
     app_id = "cb7e1cfa8fc043879d4449780763020f"  # 替换为你的 App ID
     room_id = "test_room"
 
-    token = "007eJxTYPi/84D9Ju6X/1md1urZai/Zdpnvuo2k7nPTzUd+Ks1NWc2mwJCcZJ5qmJyWaJGWbGBibGFumWJiYmJpbmFgbmZsYGSQ9sOoPr0hkJHhfMtVFkYGCATxORlKUotL4ovy83MZGAApJiJQ"  # 替换为你的 Token
+    token = "007eJxTYDjP+SxlVg5v+EtermtrIgXn/ORMeRzXefL5m4eJjuqLP31VYEhOMk81TE5LtEhLNjAxtjC3TDExMbE0tzAwNzM2MDJIW9nWkN4QyMiw/dpKFkYGCATxORlKUotL4ovy83MZGABxhSOe"  # 替换为你的 Token
 
     # 创建 AgoraParams
     params = AgoraParams(

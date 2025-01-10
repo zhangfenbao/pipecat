@@ -20,7 +20,7 @@ class TestAgoraReceiver:
         self.app_certificate = "7d9a2acf356745a3b119d91c2330eede"  # 替换为你的证书
         self.room_id = "test_room"
         self.uid = 2  # 接收端UID
-        self.token = "007eJxTYPi/84D9Ju6X/1md1urZai/Zdpnvuo2k7nPTzUd+Ks1NWc2mwJCcZJ5qmJyWaJGWbGBibGFumWJiYmJpbmFgbmZsYGSQ9sOoPr0hkJHhfMtVFkYGCATxORlKUotL4ovy83MZGAApJiJQ"  # 替换为你的Token
+        self.token = "007eJxTYDjP+SxlVg5v+EtermtrIgXn/ORMeRzXefL5m4eJjuqLP31VYEhOMk81TE5LtEhLNjAxtjC3TDExMbE0tzAwNzM2MDJIW9nWkN4QyMiw/dpKFkYGCATxORlKUotL4ovy83MZGABxhSOe"  # 替换为你的Token
 
         # 初始化参数
         self.params = AgoraParams(

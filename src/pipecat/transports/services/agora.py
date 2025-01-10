@@ -67,16 +67,16 @@ class AgoraCallbacks(BaseModel):
     on_error: Callable[[str], Awaitable[None]]
 
     # 参与者相关事件
-    on_participant_joined: Callable[[str], Awaitable[None]]
-    on_participant_left: Callable[[str], Awaitable[None]]
-    on_first_participant_joined: Callable[[str], Awaitable[None]]
-
-    # 消息事件
-    on_message_received: Callable[[Any, str], Awaitable[None]]
-
-    # 音频事件
-    on_audio_started: Callable[[str], Awaitable[None]]
-    on_audio_stopped: Callable[[str], Awaitable[None]]
+    on_user_joined: Callable[[str], Awaitable[None]]
+    on_user_left: Callable[[str], Awaitable[None]]
+    # on_first_participant_joined: Callable[[str], Awaitable[None]]
+    #
+    # # 消息事件
+    # on_message_received: Callable[[Any, str], Awaitable[None]]
+    #
+    # # 音频事件
+    # on_audio_started: Callable[[str], Awaitable[None]]
+    # on_audio_stopped: Callable[[str], Awaitable[None]]
 
 
 class AgoraTransportClient:
@@ -175,7 +175,7 @@ class AgoraTransportClient:
                 raise Exception("create connection failed")
 
             # 3. 注册连接观察者并建立连接
-            self._observer = AGORAConnectionObserver()
+            self._observer = AGORAConnectionObserver(callbacks=self._callbacks, loop=self._loop)
             self._connection.register_observer(self._observer)
 
             logger.info(f"Connecting to Agora room {self._room_id} with uid {self._participant_id}")
@@ -662,8 +662,10 @@ class Pacer:
 
 
 class AGORAConnectionObserver(IRTCConnectionObserver):
-    def __init__(self):
+    def __init__(self, callbacks, loop):
         super().__init__()
+        self._callbacks = callbacks  # 添加对回调的引用
+        self._loop = loop  # 添加事件循环的引用
 
     def on_connected(self, agora_rtc_conn, conn_info, reason):
         """连接成功回调"""
@@ -687,7 +689,12 @@ class AGORAConnectionObserver(IRTCConnectionObserver):
 
     def on_user_joined(self, agora_rtc_conn, user_id):
         """用户加入频道回调"""
-        logger.info(f"User {user_id} joined channel")
+        logger.info(f"Agora SDK 触发 on_user_joined: User {user_id}")
+        # 调用 AgoraTransport 的回调
+        asyncio.run_coroutine_threadsafe(
+            self._callbacks.on_user_joined(user_id),
+            self._loop
+        )
 
     def on_user_left(self, agora_rtc_conn, user_id, reason):
         """用户离开频道回调"""
@@ -753,12 +760,12 @@ class AgoraTransport(BaseTransport):
             on_connected=self._on_connected,
             on_disconnected=self._on_disconnected,
             on_error=self._on_error,
-            on_participant_joined=self._on_participant_joined,
-            on_participant_left=self._on_participant_left,
-            on_first_participant_joined=self._on_first_participant_joined,
-            on_message_received=self._on_message_received,
-            on_audio_started=self._on_audio_started,
-            on_audio_stopped=self._on_audio_stopped,
+            on_user_joined=self._on_user_joined,
+            on_user_left=self._on_user_left,
+            # on_first_participant_joined=self._on_first_participant_joined,
+            # on_message_received=self._on_message_received,
+            # on_audio_started=self._on_audio_started,
+            # on_audio_stopped=self._on_audio_stopped,
         )
 
         self._params = params
@@ -778,12 +785,11 @@ class AgoraTransport(BaseTransport):
         self._register_event_handler("on_connected")
         self._register_event_handler("on_disconnected")
         self._register_event_handler("on_error")
-        self._register_event_handler("on_participant_joined")
-        self._register_event_handler("on_participant_left")
-        self._register_event_handler("on_first_participant_joined")
-        self._register_event_handler("on_message_received")
-        self._register_event_handler("on_audio_started")
-        self._register_event_handler("on_audio_stopped")
+        self._register_event_handler("on_user_joined")
+        self._register_event_handler("on_user_left")
+        # self._register_event_handler("on_message_received")
+        # self._register_event_handler("on_audio_started")
+        # self._register_event_handler("on_audio_stopped")
 
     def input(self) -> AgoraInputTransport:
         if not self._input:
@@ -809,20 +815,21 @@ class AgoraTransport(BaseTransport):
     async def _on_error(self, error: str):
         await self._call_event_handler("on_error", error)
 
-    async def _on_participant_joined(self, participant_id: str):
-        await self._call_event_handler("on_participant_joined", participant_id)
+    async def _on_user_joined(self, participant_id: str):
+        logger.info(f"AgoraTransport 触发 on_user_joined 回调: {participant_id}")
+        await self._call_event_handler("on_user_joined", participant_id)
 
-    async def _on_participant_left(self, participant_id: str):
-        await self._call_event_handler("on_participant_left", participant_id)
+    async def _on_user_left(self, participant_id: str):
+        await self._call_event_handler("on_user_left", participant_id)
 
-    async def _on_first_participant_joined(self, participant_id: str):
-        await self._call_event_handler("on_first_participant_joined", participant_id)
-
-    async def _on_message_received(self, message: Any, sender: str):
-        await self._call_event_handler("on_message_received", message, sender)
-
-    async def _on_audio_started(self, participant_id: str):
-        await self._call_event_handler("on_audio_started", participant_id)
-
-    async def _on_audio_stopped(self, participant_id: str):
-        await self._call_event_handler("on_audio_stopped", participant_id)
+    # async def _on_first_participant_joined(self, participant_id: str):
+    #     await self._call_event_handler("on_first_participant_joined", participant_id)
+    #
+    # async def _on_message_received(self, message: Any, sender: str):
+    #     await self._call_event_handler("on_message_received", message, sender)
+    #
+    # async def _on_audio_started(self, participant_id: str):
+    #     await self._call_event_handler("on_audio_started", participant_id)
+    #
+    # async def _on_audio_stopped(self, participant_id: str):
+    #     await self._call_event_handler("on_audio_stopped", participant_id)
