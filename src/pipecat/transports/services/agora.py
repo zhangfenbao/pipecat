@@ -1,4 +1,6 @@
 import asyncio
+import gc
+import json
 from asyncio import Event
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, List, Optional
@@ -18,7 +20,7 @@ from pipecat.frames.frames import (
     OutputAudioRawFrame,
     StartFrame,
     TransportMessageFrame,
-    TransportMessageUrgentFrame,
+    TransportMessageUrgentFrame, TTSSpeakFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.transports.base_input import BaseInputTransport
@@ -77,6 +79,7 @@ class AgoraCallbacks(BaseModel):
     # # 音频事件
     # on_audio_started: Callable[[str], Awaitable[None]]
     # on_audio_stopped: Callable[[str], Awaitable[None]]
+    # on_stream_message: Callable[[str, int, str, int], Awaitable[None]]  # uid, stream_id, message, length
 
 
 class AgoraTransportClient:
@@ -119,6 +122,9 @@ class AgoraTransportClient:
         self._video_frame_observer = None
         self._video_encoded_observer = None
 
+        # 添加用于存储数据流ID的属性
+        self._stream_ids = set()
+
         try:
             self._agora_service = AgoraService()
             config = AgoraServiceConfig()
@@ -141,7 +147,7 @@ class AgoraTransportClient:
             # 初始化帧观察器
             self._init_frame_observers()
 
-            logger.debug(f"Agora service initialization succeeded")
+            logger.debug(f"Agora initialization succeeded")
         except Exception as e:
             raise Exception(f"Failed to initialize Agora service: {str(e)}")
 
@@ -217,8 +223,8 @@ class AgoraTransportClient:
                     self._local_user.unregister_audio_frame_observer()
 
             if self._connection:
-                self._connection.disconnect()
                 self._connection.unregister_observer()
+                self._connection.disconnect()
                 self._connection = None
             self._connected = False
             await self._callbacks.on_disconnected()
@@ -234,6 +240,7 @@ class AgoraTransportClient:
             if not self._pcm_data_sender:
                 logger.error("Create pcm data sender failed")
                 return
+            logger.debug("PCM 数据发送器创建成功")  # 添加此日志
 
             # 创建已编码的音频数据发送器
             self._audio_sender = self._media_node_factory.create_audio_encoded_frame_sender()
@@ -280,6 +287,8 @@ class AgoraTransportClient:
                 logger.error("create audio track pcm failed")
                 return
 
+            logger.debug("PCM 音频轨道创建成功")  # 添加此日志
+
             # 创建音频轨道（已编码）
             self._audio_track_encoded = self._agora_service.create_custom_audio_track_encoded(self._audio_sender, 1)
             if not self._audio_track_encoded:
@@ -309,6 +318,11 @@ class AgoraTransportClient:
             # 启用音频轨道 - set_enabled 可能不是异步的
             if self._audio_track_pcm:
                 self._audio_track_pcm.set_enabled(1)
+                if self._local_user:
+                    ret = self._local_user.publish_audio(self._audio_track_pcm)
+                    logger.info(f"发布音频轨道结果: {ret}")
+                    if ret < 0:
+                        logger.error(f"发布音频轨道失败: {ret}")
 
             # 如果视频轨道存在且视频功能启用，则启用视频轨道
             if self._video_track_frame and getattr(self._params, 'video_enabled', False):
@@ -408,16 +422,37 @@ class AgoraTransportClient:
             frame_buf = None
 
     async def send_message(self, message: Any, participant_id: str | None = None):
-        """发送消息到房间或特定参与者"""
+        """发送消息实现
+        Args:
+            message: 要发送的消息内容
+            participant_id: 目标参与者ID，如果为None则广播
+        """
         if not self._connected:
             return
 
         try:
-            # TODO: 实现实际的消息发送逻辑
-            logger.debug(f"Sending message to {participant_id if participant_id else 'all'}")
+            # 如果消息流ID还未创建，先创建一个
+            if not hasattr(self, '_stream_id'):
+                # 创建数据流，设置为不可靠模式（与示例保持一致）
+                self._stream_id = self._connection.create_data_stream(False, False)
+                logger.info(f"Created data stream with ID: {self._stream_id}")
+
+            # 准备消息内容
+            if isinstance(message, str):
+                msg_str = message
+            else:
+                msg_str = json.dumps(message)
+
+            # 发送消息
+            ret = self._connection.send_stream_message(self._stream_id, msg_str)
+            if ret < 0:
+                logger.error(f"Send stream message failed with code: {ret}")
+            else:
+                logger.info(f"Sent message successfully: {msg_str}")
         except Exception as e:
             logger.error(f"Error sending message: {e}")
-            await self._callbacks.on_error(str(e))
+            if self._callbacks:
+                await self._callbacks.on_error(str(e))
 
     async def send_audio_pcm(self, audio_data: bytes):
         """发送 PCM 格式的音频数据"""
@@ -436,36 +471,63 @@ class AgoraTransportClient:
         # TODO: 实现获取参与者列表的逻辑
         return []
 
+    async def _setup_message_handlers(self):
+        """设置消息相关的事件处理器"""
+        self._connection.register_observer({
+            'onStreamMessage': self._on_stream_message
+        })
+
+    def _on_stream_message(self, connection, uid: int, stream_id: int, data: str, length: int):
+        """处理收到的数据流消息
+        Args:
+            connection: RTCConnection实例
+            uid: 发送消息的用户ID
+            stream_id: 数据流ID
+            data: 消息内容
+            length: 消息长度
+        """
+        try:
+            logger.debug(f"Received stream message from uid {uid}, stream_id {stream_id}, length {length}")
+            logger.debug(f"Message content: {data}")
+
+            # 如果有回调处理器，触发消息回调
+            if self._callbacks:
+                asyncio.create_task(self._callbacks.on_message(str(uid), data))
+
+        except Exception as e:
+            logger.error(f"Error processing stream message: {e}")
+            if self._callbacks:
+                asyncio.create_task(self._callbacks.on_error(str(e)))
+
     async def cleanup(self):
         """清理资源"""
         try:
-            # 先停止所有媒体轨道
-            if self._video_track_frame:
-                self._video_track_frame.set_enabled(0)
+            logger.info("开始清理 Agora 资源...")
+
+            # 先禁用所有轨道
             if self._audio_track_pcm:
                 self._audio_track_pcm.set_enabled(0)
+                self._audio_track_pcm = None
 
-            await self.disconnect()
-            # 清理媒体轨道
-            self._audio_track_pcm = None
-            self._audio_track_encoded = None
-            self._video_track_frame = None
-            self._video_track_encoded = None
-            # 清理媒体发送器
+            # 断开连接
+            if self._connection:
+                self._connection.disconnect()
+                self._connection = None
+
+            # 清理发送器
             self._pcm_data_sender = None
             self._audio_sender = None
             self._video_sender = None
-            self._video_encoded_sender = None
-            # 清理媒体节点工厂
-            self._media_node_factory = None
-            # 清理声网服务
+
+            # 最后释放服务
             if self._agora_service:
                 self._agora_service.release()
-            # 清理帧观察器
-            self._audio_frame_observer = None
-            self._video_frame_observer = None
-            self._video_encoded_observer = None
-            logger.info("Successfully cleaned up all resources")
+                self._agora_service = None
+
+            # 强制垃圾回收
+            gc.collect()
+
+            logger.info("Agora 资源清理完成")
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
 
@@ -712,29 +774,125 @@ class AGORAConnectionObserver(IRTCConnectionObserver):
         """网络类型变化回调"""
         logger.info(f"Network type changed to: {network_type}")
 
+    # def on_stream_message(self, connection, uid: int, stream_id: int, msg: str, length: int):
+    #     """处理收到的数据流消息"""
+    #     logger.info(f"Received stream message from uid {uid}, stream_id {stream_id}")
+    #     try:
+    #         # 触发消息回调
+    #         if hasattr(self._callbacks, 'on_message_received'):
+    #             asyncio.run_coroutine_threadsafe(
+    #                 self._callbacks.on_message_received(msg, str(uid)),
+    #                 self._loop
+    #             )
+    #     except Exception as e:
+    #         logger.error(f"Error handling stream message: {e}")
+
 
 class AgoraOutputTransport(BaseOutputTransport):
     def __init__(self, client: AgoraTransportClient, params: AgoraParams, **kwargs):
         super().__init__(params, **kwargs)
         self._client = client
+        self._tts_service = None  # 将在 process_frame 中设置
+        self._is_stopping = False  # 添加状态标记
 
     async def start(self, frame: StartFrame):
         await super().start(frame)
         await self._client.connect()
 
     async def stop(self, frame: EndFrame):
-        await super().stop(frame)
-        await self._client.disconnect()
+        if self._is_stopping:  # 避免重复停止
+            return
+        self._is_stopping = True
+        logger.info("停止输出传输...")
+        try:
+            await super().stop(frame)
+            # 等待当前音频处理完成
+            await asyncio.sleep(0.1)
+            # 断开前确保所有队列都已清空
+            await asyncio.sleep(0.2)  # 额外等待以确保所有操作完成
+            await self._client.disconnect()
+        except Exception as e:
+            logger.error(f"停止传输时发生错误: {e}")
+        finally:
+            self._is_stopping = False
 
     async def cancel(self, frame: CancelFrame):
-        await super().cancel(frame)
-        await self._client.disconnect()
+        if self._is_stopping:  # 避免重复停止
+            return
+        self._is_stopping = True
+        logger.info("取消输出传输...")
+        try:
+            await super().cancel(frame)
+            await self._client.disconnect()
+        except Exception as e:
+            logger.error(f"取消传输时发生错误: {e}")
+        finally:
+            self._is_stopping = False
 
     async def send_message(self, frame: TransportMessageFrame | TransportMessageUrgentFrame):
         participant_id = None
         if isinstance(frame, (AgoraTransportMessageFrame, AgoraTransportMessageUrgentFrame)):
             participant_id = frame.participant_id
         await self._client.send_message(frame.message, participant_id)
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        logger.info(f"Processing frame ZZZ: {frame}")
+        # 添加对 TTSAudioRawFrame 的处理
+        if isinstance(frame, OutputAudioRawFrame):
+            try:
+                # 1. 先验证输入数据
+                if not frame.audio:
+                    logger.error("输入音频数据为空")
+                    return
+
+                # 2. 创建和填充 PCM 音频帧
+                pcm_frame = PcmAudioFrame()
+                pcm_frame.data = bytearray(frame.audio)
+                pcm_frame.samples_per_channel = frame.num_frames
+                pcm_frame.bytes_per_sample = 2  # 16-bit PCM
+                pcm_frame.number_of_channels = frame.num_channels
+                pcm_frame.sample_rate = frame.sample_rate
+                pcm_frame.timestamp = 0
+
+                # 3. 验证 PCM 帧数据
+                if (len(pcm_frame.data) == 0 or
+                        pcm_frame.samples_per_channel <= 0 or
+                        pcm_frame.sample_rate <= 0):
+                    logger.error("PCM帧参数无效")
+                    return
+
+                # 4. 检查发送器
+                if not self._client._pcm_data_sender:
+                    logger.error("PCM数据发送器未初始化")
+                    return
+
+                # 5. 发送数据并处理返回值
+                ret = self._client._pcm_data_sender.send_audio_pcm_data(pcm_frame)
+                logger.info(f"PCM data sent: {ret}")
+
+                if ret is None or ret >= 0:
+                    # 计算音频播放时长并等待
+                    delay = frame.num_frames / frame.sample_rate
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"发送音频数据失败: {ret}")
+
+            except Exception as e:
+                logger.error(f"处理音频帧时出错: {e}", exc_info=True)
+                logger.error(
+                    f"音频帧信息: num_frames={frame.num_frames}, "
+                    f"sample_rate={frame.sample_rate}, "
+                    f"num_channels={frame.num_channels}, "
+                    f"audio_size={len(frame.audio) if frame.audio else None}"
+                )
+
+            # 6. 继续处理其他帧
+            await super().push_frame(frame, direction)
+
+    async def write_raw_audio_frames(self, frames: bytes):
+        """实现父类的方法，但我们在 process_frame 中直接处理了"""
+        pass
 
 
 class AgoraTransport(BaseTransport):
@@ -755,6 +913,7 @@ class AgoraTransport(BaseTransport):
                 asyncio.set_event_loop(loop)
 
         super().__init__(input_name=input_name, output_name=output_name, loop=loop)
+        self._output: Optional[AgoraOutputTransport] = None
 
         callbacks = AgoraCallbacks(
             on_connected=self._on_connected,
@@ -800,6 +959,11 @@ class AgoraTransport(BaseTransport):
         if not self._output:
             self._output = AgoraOutputTransport(self._client, self._params, name=self._output_name)
         return self._output
+
+    def set_tts_service(self, tts_service):
+        """设置 TTS 服务"""
+        if self._output:
+            self._output._tts_service = tts_service
 
     @property
     def participant_id(self) -> str:
