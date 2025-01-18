@@ -48,7 +48,7 @@ async def main():
     async def on_user_joined(transport, participant_id):
         logger.info(f"用户加入: {participant_id}")
         await task.queue_frames([
-            TTSSpeakFrame("Hello, welcome to the Agora room!"),
+            TTSSpeakFrame("Hello there, nice to meet you ,welcome to the Agora room! how are you doing?"),
             EndFrame()
         ])
 

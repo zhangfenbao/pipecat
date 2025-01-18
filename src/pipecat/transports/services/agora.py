@@ -1,15 +1,21 @@
 import asyncio
 import gc
 import json
-from asyncio import Event
+from asyncio import Event, Handle
 from dataclasses import dataclass
+import datetime
 from typing import Any, Awaitable, Callable, List, Optional
 import time
+
+from pipecat.clocks.base_clock import BaseClock
 from pydantic import BaseModel
 from loguru import logger
-import os
 import numpy as np
-os.makedirs("log_folder", exist_ok=True)
+import os
+source_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+filename, _ = os.path.splitext(os.path.basename(__file__))
+log_folder = os.path.join(source_dir, 'logs', filename, datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S"))
+os.makedirs(log_folder, exist_ok=True)
 
 from pipecat.frames.frames import (
     AudioRawFrame,
@@ -20,7 +26,7 @@ from pipecat.frames.frames import (
     OutputAudioRawFrame,
     StartFrame,
     TransportMessageFrame,
-    TransportMessageUrgentFrame, TTSSpeakFrame,
+    TransportMessageUrgentFrame, TTSSpeakFrame, TranscriptionFrame, InterimTranscriptionFrame, ErrorFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.transports.base_input import BaseInputTransport
@@ -60,6 +66,7 @@ class AgoraParams(TransportParams):
     uid: int = 0
     app_certificate: str = ""  # 用于生成 token
     video_enabled: bool = False  # 添加视频使能控制
+    transcription_enabled: bool = False
 
 
 class AgoraCallbacks(BaseModel):
@@ -92,6 +99,7 @@ class AgoraTransportClient:
             callbacks: AgoraCallbacks,
             loop: None,
     ):
+        # self._loop = loop or asyncio.get_event_loop()  # 确保有事件循环
         self._room_id = room_id
         self._token = token
         self._params = params
@@ -269,7 +277,7 @@ class AgoraTransportClient:
         """初始化帧观察器"""
         try:
             # 创建帧观察器实例
-            self._audio_frame_observer = SampleAudioFrameObserver()
+            self._audio_frame_observer = SampleAudioFrameObserver(loop=self._loop)
             self._video_frame_observer = SampleVideoFrameObserver()
             self._video_encoded_observer = SampleVideoEncodedFrameObserver()
 
@@ -331,6 +339,14 @@ class AgoraTransportClient:
             # 获取本地用户并发布轨道
             self._local_user = self._connection.get_local_user()
             if self._local_user:
+                # 设置音频采集参数
+                ret = self._local_user.set_playback_audio_frame_parameters(
+                    sample_rate_hz=16000,  # 采样率
+                    channels=1,  # 单声道
+                    mode=0,  # RAW PCM mode
+                    samples_per_call=1024  # 每次回调的采样数
+                )
+                logger.info(f"Set audio parameters result: {ret}")
                 if self._audio_track_pcm:
                     self._local_user.publish_audio(self._audio_track_pcm)
                 # 设置音频参数
@@ -531,26 +547,82 @@ class AgoraTransportClient:
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
 
+    async def read_next_audio_frame(self) -> Optional[InputAudioRawFrame]:
+        try:
+            # 创建一个缓冲区来累积音频数据
+            if not hasattr(self, '_audio_buffer'):
+                self._audio_buffer = bytearray()
+
+            # 计算所需的最小字节数
+            sample_rate = self._params.audio_in_sample_rate or 16000
+            min_bytes_needed = int(sample_rate * 0.02) * 2  # 20ms的数据量
+
+            # 循环直到收集到足够的数据
+            while len(self._audio_buffer) < 32000:
+                audio_data = await self._audio_frame_observer.get_next_frame()
+                # logger.debug(f"read_next_audio_frame.audio_data size: {len(audio_data) if audio_data else None}")
+
+                if audio_data:
+                    self._audio_buffer.extend(audio_data)
+                else:
+                    # 如果没有新数据，短暂等待后继续
+                    await asyncio.sleep(0.01)
+                    continue
+
+            # 此时已经确保有足够的数据
+            frame_data = bytes(self._audio_buffer[:min_bytes_needed])
+            self._audio_buffer = self._audio_buffer[min_bytes_needed:]
+
+            frame = InputAudioRawFrame(
+                audio=frame_data,
+                sample_rate=sample_rate,
+                num_channels=self._params.audio_in_channels or 1
+            )
+
+            # 验证帧参数
+            if frame.sample_rate <= 0:
+                logger.error(f"Invalid sample rate: {frame.sample_rate}")
+                return None
+            if frame.num_channels <= 0:
+                logger.error(f"Invalid channel count: {frame.num_channels}")
+                return None
+
+            # logger.debug(f"Created frame with {len(frame_data)} bytes of audio data")
+            return frame
+
+        except Exception as e:
+            logger.error(f"Error reading audio frame: {e}")
+            logger.exception("Detailed error information:")
+            return None
+
 
 class AgoraInputTransport(BaseInputTransport):
     def __init__(self, client: AgoraTransportClient, params: AgoraParams, **kwargs):
         super().__init__(params, **kwargs)
         self._client = client
-        self._audio_task = None
+        self._audio_buffer = bytearray()  # 添加音频缓冲区
+        self._min_buffer_size = 32000  # 设置最小缓冲区大小（约2秒的音频）
+        self._processing = False
+        self._current_participant_id = None
 
     async def start(self, frame: StartFrame):
         await super().start(frame)
         await self._client.connect()
-        # 如果需要启动音频处理
-        if self._params.audio_in_enabled:
-            self._audio_task = asyncio.create_task(self._audio_task_handler())
+        if self._params.audio_in_enabled or self._params.vad_enabled:
+            self._processing = True
+            self._audio_task = self.get_event_loop().create_task(self._audio_in_task_handler())
 
     async def stop(self, frame: EndFrame):
-        await super().stop(frame)
-        await self._client.disconnect()
+        """Stop the transport and audio processing."""
+        self._processing = False
         if self._audio_task:
             self._audio_task.cancel()
-            await self._audio_task
+            try:
+                await self._audio_task
+            except asyncio.CancelledError:
+                pass
+        await self._client.disconnect()
+        await super().stop(frame)
 
     async def cancel(self, frame: CancelFrame):
         await super().cancel(frame)
@@ -559,16 +631,84 @@ class AgoraInputTransport(BaseInputTransport):
             self._audio_task.cancel()
             await self._audio_task
 
-    async def _audio_task_handler(self):
-        """处理音频输入的任务"""
-        while True:
+    #
+    # Audio in
+    #
+    async def _audio_in_task_handler(self):
+        # logger.info("Audio In task handler started")
+        while self._processing:
             try:
-                # TODO: 实现音频处理逻辑
-                await asyncio.sleep(0.1)
+                # logger.info("Audio In task handler Begin")
+                frame = await self._client.read_next_audio_frame()
+                if frame and frame.audio:
+                    # 确保音频数据是bytes类型
+                    if isinstance(frame.audio, bytearray):
+                        frame.audio = bytes(frame.audio)
+                    await self.push_audio_frame(frame)
+                else:
+                    logger.warning(f"Audio In task handler failed no bytes: {frame.audio}")
             except asyncio.CancelledError:
+                logger.error("Audio In task handler Cancelled Error")
                 break
             except Exception as e:
-                logger.error(f"Error in audio task: {e}")
+                logger.error(f"Error in audio task handler: {e}", exc_info=True)
+                await asyncio.sleep(0.1)  # 添加错误重试间隔
+
+    async def push_transcription_frame(self, frame: TranscriptionFrame | InterimTranscriptionFrame):
+        logger.debug(f"Push transcription frame: {frame}")
+        await self.push_frame(frame)
+
+class AudioFrameObserverForTranscription(IAudioFrameObserver):
+    def __init__(self, queue: asyncio.Queue):
+        super().__init__()
+        self._queue = queue
+        logger.info("AudioFrameObserverForTranscription initialized")
+
+    def on_playback_audio_frame_before_mixing(self, agora_local_user, channelId, uid,
+                                              audio_frame: AudioFrame,
+                                              vad_result_state: int,
+                                              vad_result_bytearray: bytearray):
+        """处理混音前的音频帧"""
+        try:
+            if audio_frame and audio_frame.buffer:
+                logger.debug(f"Received audio frame: channels={audio_frame.channels}, "
+                             f"sample_rate={audio_frame.samples_per_sec}, "
+                             f"buffer_size={len(audio_frame.buffer)}")
+                # 直接将音频帧添加到队列中，避免使用事件循环
+                self._queue.put_nowait(audio_frame)
+                logger.debug("Successfully queued audio frame")
+            else:
+                logger.warning("Received invalid audio frame")
+        except Exception as e:
+            logger.error(f"Error processing audio frame: {e}")
+        return True
+
+    def on_record_audio_frame(self, agora_local_user, channelId, frame):
+        logger.debug(f"on_record_audio_frame called for channel {channelId}")
+        return 0
+
+    def on_mixed_audio_frame(self, agora_local_user, channelId, frame):
+        logger.debug(f"on_mixed_audio_frame called for channel {channelId}")
+        return 0
+
+    def on_playback_audio_frame(self, agora_local_user, channelId, frame):
+        logger.debug(f"on_playback_audio_frame called for channel {channelId}")
+        return 0
+
+class SystemClock(BaseClock):
+    """具体的时钟实现"""
+    def __init__(self):
+        self._start_time = None
+
+    def get_time(self) -> float:
+        """获取当前时间戳"""
+        if self._start_time is None:
+            return 0.0
+        return time.time() - self._start_time
+
+    def start(self):
+        """开始计时"""
+        self._start_time = time.time()
 
 
 def apply_audio_gain(audio_frame, gain):
@@ -613,51 +753,52 @@ def apply_audio_gain(audio_frame, gain):
 
 
 class SampleAudioFrameObserver(IAudioFrameObserver):
-    def __init__(self, save_to_disk=True):
+    def __init__(self, save_to_disk=True,loop=None):
         super().__init__()
         self.save_to_disk = save_to_disk
+        self._audio_frame_queue = asyncio.Queue()
+        self._loop = loop  # 保存事件循环的引用
+
+    async def get_next_frame(self) -> Optional[bytes]:
+        try:
+            return await self._audio_frame_queue.get()
+        except asyncio.QueueEmpty:
+            return None
 
     def on_record_audio_frame(self, agora_local_user, channelId, frame):
         logger.info(f"on_record_audio_frame")
         return 0
 
     def on_playback_audio_frame(self, agora_local_user, channelId, frame):
-        logger.info(f"on_playback_audio_frame")
+        # logger.info(f"on_playback_audio_frame")
         return 0
 
     def on_ear_monitoring_audio_frame(self, agora_local_user, frame):
         logger.info(f"on_ear_monitoring_audio_frame")
         return 0
 
-    def on_playback_audio_frame_before_mixing(self, agora_local_user, channelId, uid, audio_frame: AudioFrame,
+    def on_playback_audio_frame_before_mixing(self, agora_local_user, channel_id, uid, audio_frame: AudioFrame,
                                               vad_result_state: int, vad_result_bytearray: bytearray):
         """处理混音前的音频帧"""
-        logger.info(f"接收到混音前的音频帧: channel={channelId}, uid={uid}")
         try:
+            # 1. Save to disk if enabled
             if self.save_to_disk:
-                file_path = os.path.join("log_folder", f"{channelId}_{str(uid)}.pcm")
-                if audio_frame and hasattr(audio_frame, 'buffer') and audio_frame.buffer:
-                    # 添加音频帧信息日志
-                    logger.info(f"接收到音频帧: samples={audio_frame.samples_per_channel}, "
-                                f"channels={audio_frame.channels}, "
-                                f"sample_rate={audio_frame.samples_per_sec}, "
-                                f"buffer_size={len(audio_frame.buffer)}")
-                    # 检查音频帧数据是否有效
-                    if len(audio_frame.buffer) == 0:
-                        logger.warning("音频帧数据为空")
-                        return False
-                    # 应用自定义倍增益
-                    audio_frame = apply_audio_gain(audio_frame, gain=2.5)
-                    # 保存音频帧数据
-                    with open(file_path, "ab") as f:
-                        f.write(audio_frame.buffer)
-                    # 记录写入文件的大小
-                    logger.info(f"写入PCM文件: {file_path}, 数据大小: {len(audio_frame.buffer)} bytes")
-                else:
-                    logger.warning("无效的音频帧数据")
+                file_path = os.path.join(log_folder, f"{channel_id}_{uid}.pcm")
+                # logger.info(f"Saving audio frame to {file_path}, length={len(audio_frame.buffer)}")
+                with open(file_path, "ab") as f:
+                    f.write(audio_frame.buffer)
+            # 2. Push to queue for pipeline processing
+            if self._loop and audio_frame.buffer:
+                # Use run_coroutine_threadsafe since we're in a different thread
+                asyncio.run_coroutine_threadsafe(
+                    self._audio_frame_queue.put(audio_frame.buffer),
+                    self._loop
+                )
+                # logger.debug(f"Queued audio frame for processing, size: {len(audio_frame.buffer)}")
+            return True
         except Exception as e:
-            logger.error(f"保存PCM文件错误: {e}")
-        return True
+            logger.error(f"Error in audio frame processing: {e}")
+            return False
 
 
 class SampleVideoFrameObserver(IVideoFrameObserver):
@@ -666,7 +807,7 @@ class SampleVideoFrameObserver(IVideoFrameObserver):
                  remote_uid,
                  frame: VideoFrame) -> int:
         """处理原始YUV格式的视频帧"""
-        file_path = os.path.join("log_folder", channel_id + "_" + remote_uid + ".yuv")
+        file_path = os.path.join("re", channel_id + "_" + remote_uid + ".yuv")
 
         # 计算Y、U、V分量的大小
         y_size = frame.y_stride * frame.height
@@ -686,7 +827,7 @@ class SampleVideoEncodedFrameObserver(IVideoEncodedFrameObserver):
                                length,
                                video_encoded_frame_info) -> int:
         """处理编码后的视频帧"""
-        file_path = os.path.join("log_folder", str(uid) + ".h264")
+        file_path = os.path.join("received_audio", str(uid) + ".h264")
 
         with open(file_path, "ab") as f:
             f.write(image_buffer[:length])
@@ -755,7 +896,7 @@ class AGORAConnectionObserver(IRTCConnectionObserver):
         # 调用 AgoraTransport 的回调
         asyncio.run_coroutine_threadsafe(
             self._callbacks.on_user_joined(user_id),
-            self._loop
+            self._loop,
         )
 
     def on_user_left(self, agora_rtc_conn, user_id, reason):
@@ -773,19 +914,6 @@ class AGORAConnectionObserver(IRTCConnectionObserver):
     def on_network_type_changed(self, agora_rtc_conn, network_type):
         """网络类型变化回调"""
         logger.info(f"Network type changed to: {network_type}")
-
-    # def on_stream_message(self, connection, uid: int, stream_id: int, msg: str, length: int):
-    #     """处理收到的数据流消息"""
-    #     logger.info(f"Received stream message from uid {uid}, stream_id {stream_id}")
-    #     try:
-    #         # 触发消息回调
-    #         if hasattr(self._callbacks, 'on_message_received'):
-    #             asyncio.run_coroutine_threadsafe(
-    #                 self._callbacks.on_message_received(msg, str(uid)),
-    #                 self._loop
-    #             )
-    #     except Exception as e:
-    #         logger.error(f"Error handling stream message: {e}")
 
 
 class AgoraOutputTransport(BaseOutputTransport):
@@ -894,7 +1022,6 @@ class AgoraOutputTransport(BaseOutputTransport):
         """实现父类的方法，但我们在 process_frame 中直接处理了"""
         pass
 
-
 class AgoraTransport(BaseTransport):
     def __init__(
             self,
@@ -985,15 +1112,3 @@ class AgoraTransport(BaseTransport):
 
     async def _on_user_left(self, participant_id: str):
         await self._call_event_handler("on_user_left", participant_id)
-
-    # async def _on_first_participant_joined(self, participant_id: str):
-    #     await self._call_event_handler("on_first_participant_joined", participant_id)
-    #
-    # async def _on_message_received(self, message: Any, sender: str):
-    #     await self._call_event_handler("on_message_received", message, sender)
-    #
-    # async def _on_audio_started(self, participant_id: str):
-    #     await self._call_event_handler("on_audio_started", participant_id)
-    #
-    # async def _on_audio_stopped(self, participant_id: str):
-    #     await self._call_event_handler("on_audio_stopped", participant_id)
