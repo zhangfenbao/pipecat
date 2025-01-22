@@ -1,6 +1,7 @@
 import asyncio
 import gc
 import json
+import uuid
 from asyncio import Event, Handle
 from dataclasses import dataclass
 import datetime
@@ -88,6 +89,13 @@ class AgoraCallbacks(BaseModel):
     # on_audio_stopped: Callable[[str], Awaitable[None]]
     # on_stream_message: Callable[[str, int, str, int], Awaitable[None]]  # uid, stream_id, message, length
 
+class TranscriptionStateFrame(Frame):
+    """Represents the state of transcription"""
+    def __init__(self, instance_id: str, model: str):
+        super().__init__()
+        self.instance_id = instance_id
+        self.model = model
+
 
 class AgoraTransportClient:
     def __init__(
@@ -132,6 +140,7 @@ class AgoraTransportClient:
 
         # 添加用于存储数据流ID的属性
         self._stream_ids = set()
+        self._transcription_started = False
 
         try:
             self._agora_service = AgoraService()
@@ -595,6 +604,19 @@ class AgoraTransportClient:
             logger.exception("Detailed error information:")
             return None
 
+    async def start_transcription(self):
+        """Start the transcription service"""
+        if not self._transcription_started:
+            self._transcription_started = True
+            instance_id = str(uuid.uuid4())
+            frame = TranscriptionStateFrame(
+                instance_id=instance_id,
+                model="rtvi-transcription"  # 或其他模型名称
+            )
+            logger.info(f"Transcription started: instanceId={instance_id}")
+            return frame
+        return None
+
 
 class AgoraInputTransport(BaseInputTransport):
     def __init__(self, client: AgoraTransportClient, params: AgoraParams, **kwargs):
@@ -893,10 +915,22 @@ class AGORAConnectionObserver(IRTCConnectionObserver):
     def on_user_joined(self, agora_rtc_conn, user_id):
         """用户加入频道回调"""
         logger.info(f"Agora SDK 触发 on_user_joined: User {user_id}")
-        # 调用 AgoraTransport 的回调
+
+        async def handle_user_joined():
+            if self._callbacks:
+                # 先启动转写服务
+                if hasattr(self._callbacks, '_client'):
+                    frame = await self._callbacks._client.start_transcription()
+                    if frame:
+                        # 这里可以触发转写开始的事件
+                        logger.info(f"Transcription started: {frame.instance_id}")
+
+                # 然后调用原有的用户加入回调
+                await self._callbacks.on_user_joined(user_id)
+
         asyncio.run_coroutine_threadsafe(
-            self._callbacks.on_user_joined(user_id),
-            self._loop,
+            handle_user_joined(),
+            self._loop
         )
 
     def on_user_left(self, agora_rtc_conn, user_id, reason):
@@ -1041,12 +1075,13 @@ class AgoraTransport(BaseTransport):
 
         super().__init__(input_name=input_name, output_name=output_name, loop=loop)
         self._output: Optional[AgoraOutputTransport] = None
+        self._transcription_callback = None
 
         callbacks = AgoraCallbacks(
             on_connected=self._on_connected,
             on_disconnected=self._on_disconnected,
             on_error=self._on_error,
-            on_user_joined=self._on_user_joined,
+            on_user_joined=self._on_user_joined_with_transcription,
             on_user_left=self._on_user_left,
             # on_first_participant_joined=self._on_first_participant_joined,
             # on_message_received=self._on_message_received,
@@ -1112,3 +1147,16 @@ class AgoraTransport(BaseTransport):
 
     async def _on_user_left(self, participant_id: str):
         await self._call_event_handler("on_user_left", participant_id)
+
+    async def _on_user_joined_with_transcription(self, participant_id: str):
+        """处理用户加入和转写启动"""
+        logger.info(f"User joined with transcription: {participant_id}")
+        # 先启动转写
+        frame = await self._client.start_transcription()
+        if frame:
+            # 如果有转写回调，触发它
+            if self._transcription_callback:
+                await self._transcription_callback(frame)
+
+        # 触发原有的用户加入事件
+        await self._on_user_joined(participant_id)
