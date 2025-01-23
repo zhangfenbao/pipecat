@@ -2,7 +2,7 @@ import asyncio
 import gc
 import json
 import uuid
-from asyncio import Event, Handle
+from asyncio import Event
 from dataclasses import dataclass
 import datetime
 from typing import Any, Awaitable, Callable, List, Optional
@@ -19,7 +19,6 @@ log_folder = os.path.join(source_dir, 'logs', filename, datetime.datetime.now().
 os.makedirs(log_folder, exist_ok=True)
 
 from pipecat.frames.frames import (
-    AudioRawFrame,
     CancelFrame,
     EndFrame,
     Frame,
@@ -27,7 +26,7 @@ from pipecat.frames.frames import (
     OutputAudioRawFrame,
     StartFrame,
     TransportMessageFrame,
-    TransportMessageUrgentFrame, TTSSpeakFrame, TranscriptionFrame, InterimTranscriptionFrame, ErrorFrame,
+    TransportMessageUrgentFrame, TranscriptionFrame, InterimTranscriptionFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.transports.base_input import BaseInputTransport
@@ -40,8 +39,7 @@ from agora.rtc.agora_base import (
     AudioScenarioType,
     RTCConnConfig,
     ClientRoleType,
-    ChannelProfileType, PcmAudioFrame, ExternalVideoFrame, AudioFrame, VideoFrame, VideoEncoderConfiguration,
-    VideoDimensions, SenderOptions, TCcMode, VideoCodecType, AudioSubscriptionOptions)
+    ChannelProfileType, PcmAudioFrame, ExternalVideoFrame, AudioFrame, VideoFrame,SenderOptions, TCcMode, VideoCodecType, AudioSubscriptionOptions)
 from agora.rtc.agora_service import AgoraService
 from agora.rtc.rtc_connection_observer import IRTCConnectionObserver
 from agora.rtc.audio_pcm_data_sender import AudioPcmDataSender

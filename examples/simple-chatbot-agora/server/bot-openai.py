@@ -13,7 +13,8 @@ from pipecat.frames.frames import (
     Frame,
     LLMMessagesFrame,
     OutputImageRawFrame,
-    SpriteFrame
+    SpriteFrame, TranscriptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame, StartInterruptionFrame,
+    StopInterruptionFrame
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -28,8 +29,10 @@ from pipecat.processors.frameworks.rtvi import (
     RTVISpeakingProcessor,
     RTVIUserTranscriptionProcessor
 )
+from pipecat.services.azure import AzureSTTService
 from pipecat.services.elevenlabs import ElevenLabsTTSService
 from pipecat.services.openai import OpenAILLMService
+from pipecat.transcriptions.language import Language
 from pipecat.transports.services.agora import AgoraTransport, AgoraParams, TranscriptionStateFrame
 
 # 创建日志输出目录
@@ -65,15 +68,16 @@ class TalkingAnimation(FrameProcessor):
         self._is_talking = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
+        logger.info(f"TalkingAnimation.Processing frame AAA:frame= {frame}")
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, BotStartedSpeakingFrame):
-            if not self._is_talking:
-                await self.push_frame(talking_frame)
-                self._is_talking = True
-        elif isinstance(frame, BotStoppedSpeakingFrame):
-            await self.push_frame(quiet_frame)
-            self._is_talking = False
+        # if isinstance(frame, BotStartedSpeakingFrame):
+        #     if not self._is_talking:
+        #         await self.push_frame(talking_frame)
+        #         self._is_talking = True
+        # elif isinstance(frame, BotStoppedSpeakingFrame):
+        #     await self.push_frame(quiet_frame)
+        #     self._is_talking = False
 
         await self.push_frame(frame, direction)
 
@@ -81,7 +85,7 @@ async def main():
     """Main bot execution."""
     # Initialize Agora transport
     transport = AgoraTransport(
-        token=os.getenv("AGORA_TOKEN") or "007eJxTYPit3r/0winXe/c3rll4mfHwdMf0zS6OH1vtf8+ycHqXxfpMgSE5yTzVMDkt0SIt2cDE2MLcMsXExMTS3MLA3MzYwMgg7X3ihPSGQEYG/4hFzIwMEAjiczKUpBaXxBfl5+cyMAAA2Qoj0g==",
+        token=os.getenv("AGORA_TOKEN") or "007eJxTYNC5mLg+hrnylNHH1XP2/F2W3/mIKZxhtU/KxbSfN2rdPLYqMCQnmacaJqclWqQlG5gYW5hbppiYmFiaWxiYmxkbGBmkqb+amN4QyMggPGEdCyMDBIL4nAwlqcUl8UX5+bkMDABSNCJm",
         params=AgoraParams(
             app_id=os.getenv("AGORA_APP_ID") or "cb7e1cfa8fc043879d4449780763020f",
             room_id=os.getenv("AGORA_ROOM_ID") or "test_room",
@@ -89,9 +93,16 @@ async def main():
             app_certificate=os.getenv("AGORA_CERTIFICATE") or "7d9a2acf356745a3b119d91c2330eede",
             audio_in_enabled=True,
             audio_out_enabled=True,
-            vad_enabled=True,
-            vad_analyzer=SileroVADAnalyzer(),
         )
+    )
+
+    # 设置Azure STT服务
+    stt_service = AzureSTTService(
+        api_key=os.getenv("AZURE_SPEECH_API_KEY") or "8BIA5ZmBSkVgPXBzO5yOx8JNIAOGpchOY0GvsNbHMWb1MiXuFMblJQQJ99BAAC3pKaRXJ3w3AAAYACOG5M0J",
+        region=os.getenv("AZURE_SPEECH_REGION") or "eastasia",
+        language=Language.ZH_CN,  # 设置为中文
+        sample_rate=16000,  # Azure支持的采样率
+        channels=1  # 单声道
     )
 
     # Initialize TTS service
@@ -104,7 +115,7 @@ async def main():
     # Initialize LLM service
     llm = OpenAILLMService(
         api_key=os.getenv("OPENAI_API_KEY"),
-        model="gpt-4"
+        model="gpt-4o"
     )
 
     # Set up context
@@ -116,16 +127,17 @@ async def main():
     context_aggregator = llm.create_context_aggregator(context)
 
     # Initialize pipeline components
-    ta = TalkingAnimation()
+    rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
     rtvi_speaking = RTVISpeakingProcessor()
     rtvi_user = RTVIUserTranscriptionProcessor()
     rtvi_bot = RTVIBotTranscriptionProcessor()
     rtvi_metrics = RTVIMetricsProcessor()
-    rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
+    ta = TalkingAnimation()
 
     # Build pipeline
     pipeline = Pipeline([
         transport.input(),
+        stt_service,
         rtvi,
         rtvi_speaking,
         rtvi_user,
