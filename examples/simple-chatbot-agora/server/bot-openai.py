@@ -98,8 +98,8 @@ async def main():
 
     # 设置Azure STT服务
     stt_service = AzureSTTService(
-        api_key=os.getenv("AZURE_SPEECH_API_KEY") or "8BIA5ZmBSkVgPXBzO5yOx8JNIAOGpchOY0GvsNbHMWb1MiXuFMblJQQJ99BAAC3pKaRXJ3w3AAAYACOG5M0J",
-        region=os.getenv("AZURE_SPEECH_REGION") or "eastasia",
+        api_key=os.getenv("AZURE_SPEECH_API_KEY"),
+        region=os.getenv("AZURE_SPEECH_REGION"),
         language=Language.ZH_CN,  # 设置为中文
         sample_rate=16000,  # Azure支持的采样率
         channels=1  # 单声道
