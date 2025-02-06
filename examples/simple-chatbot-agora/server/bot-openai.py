@@ -19,7 +19,7 @@ from pipecat.frames.frames import (
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext, OpenAILLMContextFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.frameworks.rtvi import (
     RTVIBotTranscriptionProcessor,
@@ -27,11 +27,11 @@ from pipecat.processors.frameworks.rtvi import (
     RTVIMetricsProcessor,
     RTVIProcessor,
     RTVISpeakingProcessor,
-    RTVIUserTranscriptionProcessor
+    RTVIUserTranscriptionProcessor, RTVIBotLLMProcessor, RTVIBotTTSProcessor
 )
 from pipecat.services.azure import AzureSTTService
 from pipecat.services.elevenlabs import ElevenLabsTTSService
-from pipecat.services.openai import OpenAILLMService
+from pipecat.services.openai import OpenAILLMService, OpenAIUserContextAggregator, BaseOpenAILLMService
 from pipecat.transcriptions.language import Language
 from pipecat.transports.services.agora import AgoraTransport, AgoraParams, TranscriptionStateFrame
 
@@ -60,31 +60,6 @@ quiet_frame = sprites[0]
 talking_frame = SpriteFrame(images=sprites)
 
 
-class TranscriptionFrameEnricher(FrameProcessor):
-    """Enriches TranscriptionFrame with missing information."""
-
-    def __init__(self, user_id: str = "", language: Language = Language.ZH_CN):
-        super().__init__()
-        self._user_id = user_id
-        self._language = language
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        if isinstance(frame, TranscriptionFrame):
-            # 创建一个新的TranscriptionFrame，包含所有必要的信息
-            enriched_frame = TranscriptionFrame(
-                text=frame.text,
-                user_id=self._user_id if frame.user_id is None or frame.user_id == "" else frame.user_id,
-                timestamp=frame.timestamp,
-                language=self._language if frame.language is None else frame.language,
-            )
-            logger.info(f"Enriched transcription frame: {enriched_frame}")
-            await self.push_frame(enriched_frame, direction)
-            return
-
-        # 非TranscriptionFrame直接传递
-        await self.push_frame(frame, direction)
-
-
 class TalkingAnimation(FrameProcessor):
     """Manages bot animation states."""
 
@@ -105,6 +80,28 @@ class TalkingAnimation(FrameProcessor):
         #     self._is_talking = False
 
         await self.push_frame(frame, direction)
+
+class DebugUserAggregator(OpenAIUserContextAggregator):
+    async def process_frame(self, frame, direction):
+        logger.debug(f"User aggregator processing frame: {frame}")
+        if isinstance(frame, TranscriptionFrame):
+            logger.debug(f"Adding transcription text to context: {frame.text}")
+            self._context.add_message({"role": "user", "content": frame.text})
+            logger.debug(f"Current context messages: {self._context.messages}")
+            # 确保生成 OpenAILLMContextFrame
+            await self.push_frame(OpenAILLMContextFrame(context=self._context))
+
+        await super().process_frame(frame, direction)
+
+class DebugLLM(OpenAILLMService):
+    async def process_frame(self, frame, direction):
+        logger.debug(f"LLM processing frame: {frame}")
+        await super().process_frame(frame, direction)
+
+class DebugRTVIUserTranscriptionProcessor(RTVIUserTranscriptionProcessor):
+    async def process_frame(self, frame, direction):
+        logger.debug(f"RTVI User Transcription processing frame: {frame}")
+        await super().process_frame(frame, direction)
 
 async def main():
     """Main bot execution."""
@@ -138,9 +135,9 @@ async def main():
     )
 
     # Initialize LLM service
-    llm = OpenAILLMService(
+    llm = DebugLLM(
         api_key=os.getenv("OPENAI_API_KEY"),
-        model="gpt-4o"
+        model="gpt-4o",
     )
 
     # Set up context
@@ -150,31 +147,40 @@ async def main():
     }]
     context = OpenAILLMContext(messages)
     context_aggregator = llm.create_context_aggregator(context)
+    user_aggregator = DebugUserAggregator(context)
+    assistant_aggregator = context_aggregator.assistant()
+
+    # 添加日志打印初始上下文
+    logger.debug(f"Initial context messages: {context.messages}")
 
     # Initialize pipeline components
     rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
     rtvi_speaking = RTVISpeakingProcessor()
-    rtvi_user = RTVIUserTranscriptionProcessor()
+    rtvi_user = DebugRTVIUserTranscriptionProcessor()
     rtvi_bot = RTVIBotTranscriptionProcessor()
     rtvi_metrics = RTVIMetricsProcessor()
+    # 添加必要的处理器
+    rtvi_bot_llm = RTVIBotLLMProcessor()
+    rtvi_bot_tts = RTVIBotTTSProcessor(direction=FrameDirection.UPSTREAM)
     ta = TalkingAnimation()
 
     # Build pipeline
     pipeline = Pipeline([
         transport.input(),
-        stt_service,
-        TranscriptionFrameEnricher(user_id="1", language=Language.ZH_CN),
         rtvi,
         rtvi_speaking,
+        stt_service,
+        user_aggregator,
         rtvi_user,
-        context_aggregator.user(),
         llm,
+        rtvi_bot_llm,
         rtvi_bot,
         tts,
         ta,
         rtvi_metrics,
         transport.output(),
-        context_aggregator.assistant()
+        rtvi_bot_tts,
+        assistant_aggregator
     ])
 
     # Create pipeline task
