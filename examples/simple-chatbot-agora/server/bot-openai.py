@@ -14,7 +14,7 @@ from pipecat.frames.frames import (
     LLMMessagesFrame,
     OutputImageRawFrame,
     SpriteFrame, TranscriptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame, StartInterruptionFrame,
-    StopInterruptionFrame
+    StopInterruptionFrame, TransportMessageUrgentFrame
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -60,6 +60,31 @@ quiet_frame = sprites[0]
 talking_frame = SpriteFrame(images=sprites)
 
 
+class TranscriptionFrameEnricher(FrameProcessor):
+    """Enriches TranscriptionFrame with missing information."""
+
+    def __init__(self, user_id: str = "", language: Language = Language.ZH_CN):
+        super().__init__()
+        self._user_id = user_id
+        self._language = language
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        if isinstance(frame, TranscriptionFrame):
+            # 创建一个新的TranscriptionFrame，包含所有必要的信息
+            enriched_frame = TranscriptionFrame(
+                text=frame.text,
+                user_id=self._user_id if frame.user_id is None or frame.user_id == "" else frame.user_id,
+                timestamp=frame.timestamp,
+                language=self._language if frame.language is None else frame.language,
+            )
+            logger.info(f"Enriched transcription frame: {enriched_frame}")
+            await self.push_frame(enriched_frame, direction)
+            return
+
+        # 非TranscriptionFrame直接传递
+        await self.push_frame(frame, direction)
+
+
 class TalkingAnimation(FrameProcessor):
     """Manages bot animation states."""
 
@@ -69,7 +94,7 @@ class TalkingAnimation(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         logger.info(f"TalkingAnimation.Processing frame AAA:frame= {frame}")
-        await super().process_frame(frame, direction)
+        # await super().process_frame(frame, direction)
 
         # if isinstance(frame, BotStartedSpeakingFrame):
         #     if not self._is_talking:
@@ -85,7 +110,7 @@ async def main():
     """Main bot execution."""
     # Initialize Agora transport
     transport = AgoraTransport(
-        token=os.getenv("AGORA_TOKEN") or "007eJxTYNC5mLg+hrnylNHH1XP2/F2W3/mIKZxhtU/KxbSfN2rdPLYqMCQnmacaJqclWqQlG5gYW5hbppiYmFiaWxiYmxkbGBmkqb+amN4QyMggPGEdCyMDBIL4nAwlqcUl8UX5+bkMDABSNCJm",
+        token=os.getenv("AGORA_TOKEN") or "007eJxTYFi3/u/8X+3ZLvJ+/68GuQskVPLxzTvZs/XldB22s98MfnxVYEhOMk81TE5LtEhLNjAxtjC3TDExMbE0tzAwNzM2MDJIk1Vfkt4QyMgQfpCXiZEBAkF8ToaS1OKS+KL8/FwGBgBdEyHy",
         params=AgoraParams(
             app_id=os.getenv("AGORA_APP_ID") or "cb7e1cfa8fc043879d4449780763020f",
             room_id=os.getenv("AGORA_ROOM_ID") or "test_room",
@@ -138,6 +163,7 @@ async def main():
     pipeline = Pipeline([
         transport.input(),
         stt_service,
+        TranscriptionFrameEnricher(user_id="1", language=Language.ZH_CN),
         rtvi,
         rtvi_speaking,
         rtvi_user,
