@@ -103,9 +103,10 @@ class AgoraTransportClient:
             token: str,
             params: AgoraParams,
             callbacks: AgoraCallbacks,
-            loop: None,
+            # loop: None,
+            loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
-        # self._loop = loop or asyncio.get_event_loop()  # 确保有事件循环
+        self._loop = loop or asyncio.get_event_loop()  # 确保有事件循环
         self._room_id = room_id
         self._token = token
         self._params = params
@@ -1061,17 +1062,25 @@ class AgoraTransport(BaseTransport):
             params: AgoraParams = AgoraParams(),
             input_name: str | None = None,
             output_name: str | None = None,
-            loop: asyncio.AbstractEventLoop | None = None,
+            # loop: asyncio.AbstractEventLoop | None = None,
     ):
-        # 确保有一个有效的事件循环
-        if loop is None:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+        # # 确保有一个有效的事件循环
+        # if loop is None:
+        #     try:
+        #         loop = asyncio.get_running_loop()
+        #     except RuntimeError:
+        #         loop = asyncio.new_event_loop()
+        #         asyncio.set_event_loop(loop)
 
-        super().__init__(input_name=input_name, output_name=output_name, loop=loop)
+        # super().__init__(input_name=input_name, output_name=output_name, loop=loop)
+        # 调用父类初始化，但不传入 loop 参数
+        super().__init__(input_name=input_name, output_name=output_name)
+        # 获取当前事件循环
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
         self._output: Optional[AgoraOutputTransport] = None
         self._transcription_callback = None
 
@@ -1095,7 +1104,7 @@ class AgoraTransport(BaseTransport):
             token=token,
             params=params,
             callbacks=callbacks,
-            loop=self._loop  # 这里使用已确保有效的事件循环
+            loop=self._loop
         )
         self._input: Optional[AgoraInputTransport] = None
         self._output: Optional[AgoraOutputTransport] = None
