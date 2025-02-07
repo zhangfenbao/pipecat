@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 from loguru import logger
 from PIL import Image
 
-from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
@@ -107,7 +106,7 @@ async def main():
     """Main bot execution."""
     # Initialize Agora transport
     transport = AgoraTransport(
-        token=os.getenv("AGORA_TOKEN") or "007eJxTYFi3/u/8X+3ZLvJ+/68GuQskVPLxzTvZs/XldB22s98MfnxVYEhOMk81TE5LtEhLNjAxtjC3TDExMbE0tzAwNzM2MDJIk1Vfkt4QyMgQfpCXiZEBAkF8ToaS1OKS+KL8/FwGBgBdEyHy",
+        token=os.getenv("AGORA_TOKEN") or "007eJxTYFBeECqWYRaw7bLIjSCzrR5r+pbmssZMu1t0sz35gaLTq1MKDMlJ5qmGyWmJFmnJBibGFuaWKSYmJpbmFgbmZsYGRgZpCilL0xsCGRksN8YwMTJAIIjPyVCSWlwSX5Sfn8vAAACuOSB0",
         params=AgoraParams(
             app_id=os.getenv("AGORA_APP_ID") or "cb7e1cfa8fc043879d4449780763020f",
             room_id=os.getenv("AGORA_ROOM_ID") or "test_room",
@@ -176,7 +175,7 @@ async def main():
         rtvi_bot_llm,
         rtvi_bot,
         tts,
-        ta,
+        # ta,
         rtvi_metrics,
         transport.output(),
         rtvi_bot_tts,
