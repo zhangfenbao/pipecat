@@ -106,12 +106,12 @@ async def main():
     """Main bot execution."""
     # Initialize Agora transport
     transport = AgoraTransport(
-        token=os.getenv("AGORA_TOKEN") or "007eJxTYFBeECqWYRaw7bLIjSCzrR5r+pbmssZMu1t0sz35gaLTq1MKDMlJ5qmGyWmJFmnJBibGFuaWKSYmJpbmFgbmZsYGRgZpCilL0xsCGRksN8YwMTJAIIjPyVCSWlwSX5Sfn8vAAACuOSB0",
+        token=os.getenv("AGORA_TOKEN"),
         params=AgoraParams(
-            app_id=os.getenv("AGORA_APP_ID") or "cb7e1cfa8fc043879d4449780763020f",
-            room_id=os.getenv("AGORA_ROOM_ID") or "test_room",
-            uid=int(os.getenv("AGORA_UID", "0") or "12345"),
-            app_certificate=os.getenv("AGORA_CERTIFICATE") or "7d9a2acf356745a3b119d91c2330eede",
+            app_id=os.getenv("AGORA_APP_ID"),
+            room_id=os.getenv("AGORA_ROOM_ID"),
+            uid=int(os.getenv("AGORA_UID", "0")),
+            app_certificate=os.getenv("AGORA_CERTIFICATE"),
             audio_in_enabled=True,
             audio_out_enabled=True,
         )
@@ -128,7 +128,7 @@ async def main():
 
     # Initialize TTS service
     tts = ElevenLabsTTSService(
-        api_key=os.getenv("ELEVENLABS_API_KEY") or "sk_ecad360f5b4888588632a9dc64eedfdb4e1f6c44d3dcb1bd",
+        api_key=os.getenv("ELEVENLABS_API_KEY"),
         voice_id="29vD33N1CtxCmqQRPOHJ",
         output_format="pcm_16000"
     )
