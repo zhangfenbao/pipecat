@@ -36,3 +36,14 @@ pipecat/examples/twilio-chatbot/templates/streams.xml
 # Documentation
 docs/api/_build/
 docs/api/api
+
+**/*.pcm
+**/*.wav
+**/*.mp3
+**/*.m4a
+**/*.ogg
+**/*.flac
+**/*.aac
+**/*.log
+**/*tmp*
+**/*test*
