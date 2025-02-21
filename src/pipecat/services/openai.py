@@ -128,7 +128,7 @@ class BaseOpenAILLMService(LLMService):
         params: InputParams = InputParams(),
         **kwargs,
     ):
-        logger.info(f"xxxxxxInitializing BaseOpenAILLMService with model: {model}, api_key: {api_key}, base_url: {base_url}")
+        logger.info(f"xxxxxxInitializing BaseOpenAILLMService with model: {model}, api_key: {bool(api_key)}, base_url: {base_url}")
         super().__init__(**kwargs)
         self._settings = {
             "frequency_penalty": params.frequency_penalty,
@@ -143,10 +143,17 @@ class BaseOpenAILLMService(LLMService):
         logger.info(f"xxxxxxSettings initialized: {self._settings}")
         self.set_model_name(model)
         logger.info("xxxxxxCreating client")
-        self._client = self.create_client(
-            api_key=api_key, base_url=base_url, organization=organization, project=project, **kwargs
-        )
-        logger.info("xxxxxxClient created")
+        try:
+            self._client = self.create_client(
+                api_key=api_key, base_url=base_url, organization=organization, project=project, **kwargs
+            )
+            if not self._client:
+                logger.error("Client creation failed - client is None")
+                raise ValueError("Failed to create client")
+            logger.info(f"xxxxxxClient created: {self._client}")
+        except Exception as e:
+            logger.error(f"Error during client creation: {str(e)}")
+            raise
 
     def create_client(self, api_key=None, base_url=None, organization=None, project=None, **kwargs):
         return AsyncOpenAI(

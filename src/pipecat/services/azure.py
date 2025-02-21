@@ -429,16 +429,32 @@ class AzureLLMService(OpenAILLMService):
     def create_client(self, api_key=None, base_url=None, **kwargs):
         """Create OpenAI-compatible client for Azure OpenAI endpoint."""
         logger.debug(f"Creating Azure OpenAI client with endpoint {self._endpoint}")
-        logger.info(f"xxxxxxAzure api_key: {api_key}")
+        logger.info(f"xxxxxxAzure api_key provided: {bool(api_key)}")
         logger.info(f"xxxxxxAzure endpoint: {self._endpoint}")
         logger.info(f"xxxxxxAzure api_version: {self._api_version}")
-        client = AsyncAzureOpenAI(
-            api_key=api_key,
-            azure_endpoint=self._endpoint,
-            api_version=self._api_version,
-        )
-        logger.info(f"xxxxxxAzure client created: {client}")
-        return client
+        
+        if not api_key:
+            logger.error("Azure API key is required but not provided")
+            raise ValueError("Azure API key is required")
+            
+        if not self._endpoint:
+            logger.error("Azure endpoint is required but not provided")
+            raise ValueError("Azure endpoint is required")
+            
+        try:
+            client = AsyncAzureOpenAI(
+                api_key=api_key,
+                azure_endpoint=self._endpoint,
+                api_version=self._api_version,
+            )
+            logger.info(f"xxxxxxAzure client created: {client}")
+            if not client:
+                logger.error("Failed to create Azure client - client is None")
+                raise ValueError("Failed to create Azure client")
+            return client
+        except Exception as e:
+            logger.error(f"Error creating Azure client: {str(e)}")
+            raise
 
 
 class AzureBaseTTSService(TTSService):
