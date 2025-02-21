@@ -92,6 +92,7 @@ class OpenAILLMContext:
         self._messages[:] = messages
 
     def get_messages(self) -> List[ChatCompletionMessageParam]:
+        logger.info(f"xxxxxxGetting messages: {self._messages}")
         return self._messages
 
     def get_messages_json(self) -> str:
@@ -110,6 +111,7 @@ class OpenAILLMContext:
             if "mime_type" in msg and msg["mime_type"].startswith("image/"):
                 msg["data"] = "..."
             msgs.append(msg)
+        logger.info(f"xxxxxxMessages for logging: {json.dumps(msgs)}")
         return json.dumps(msgs)
 
     def from_standard_message(self, message):

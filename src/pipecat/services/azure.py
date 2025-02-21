@@ -426,11 +426,16 @@ class AzureLLMService(OpenAILLMService):
     def create_client(self, api_key=None, base_url=None, **kwargs):
         """Create OpenAI-compatible client for Azure OpenAI endpoint."""
         logger.debug(f"Creating Azure OpenAI client with endpoint {self._endpoint}")
-        return AsyncAzureOpenAI(
+        logger.info(f"xxxxxxAzure api_key: {api_key}")
+        logger.info(f"xxxxxxAzure endpoint: {self._endpoint}")
+        logger.info(f"xxxxxxAzure api_version: {self._api_version}")
+        client = AsyncAzureOpenAI(
             api_key=api_key,
             azure_endpoint=self._endpoint,
             api_version=self._api_version,
         )
+        logger.info(f"xxxxxxAzure client created: {client}")
+        return client
 
 
 class AzureBaseTTSService(TTSService):

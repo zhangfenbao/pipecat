@@ -190,8 +190,10 @@ class BaseOpenAILLMService(LLMService):
         self, context: OpenAILLMContext
     ) -> AsyncStream[ChatCompletionChunk]:
         logger.debug(f"Generating chat: {context.get_messages_for_logging()}")
+        logger.info("xxxxxxStarting _stream_chat_completions")
 
         messages: List[ChatCompletionMessageParam] = context.get_messages()
+        logger.info(f"xxxxxxGot messages: {messages}")
 
         # base64 encode any images
         for message in messages:
@@ -208,7 +210,9 @@ class BaseOpenAILLMService(LLMService):
                 del message["data"]
                 del message["mime_type"]
 
+        logger.info("xxxxxxCalling get_chat_completions")
         chunks = await self.get_chat_completions(context, messages)
+        logger.info(f"xxxxxxGot chunks: {chunks}")
 
         return chunks
 
