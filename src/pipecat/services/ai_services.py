@@ -118,7 +118,9 @@ class AIService(FrameProcessor):
 
         if isinstance(frame, StartFrame):
             logger.info(f"xxxxxxProcessing StartFrame")
+            logger.info(f"xxxxxxFrame: {frame}")
             await self.start(frame)
+            logger.info(f"xxxxxxFinished processing StartFrame")
         elif isinstance(frame, CancelFrame):
             logger.info(f"xxxxxxProcessing CancelFrame")
             await self.cancel(frame)
