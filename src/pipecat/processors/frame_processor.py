@@ -306,27 +306,31 @@ class FrameProcessor:
         # logger.info(f"Direction: {direction}")
         # logger.info(f"Observer: {self._observer}")
         # logger.info(f"on_push_frame: {self._observer.on_push_frame}")
-        try:
-            timestamp = self._clock.get_time() if self._clock else 0
-            
-            if direction == FrameDirection.DOWNSTREAM and self._next:
-                logger.trace(f"Pushing {frame} from {self} to {self._next}")
-                if self._observer:
-                    await self._observer.on_push_frame(
-                        self, self._next, frame, direction, timestamp
-                    )
-                await self._next.queue_frame(frame, direction)
-            elif direction == FrameDirection.UPSTREAM and self._prev:
-                logger.trace(f"Pushing {frame} upstream from {self} to {self._prev}")
-                if self._observer:
-                    await self._observer.on_push_frame(
-                        self, self._prev, frame, direction, timestamp
-                    )
-                await self._prev.queue_frame(frame, direction)
-        except Exception as e:
-            logger.exception(f"Uncaught exception in {self}: {e}")
-            await self.push_error(ErrorFrame(str(e)))
-            raise
+        
+        timestamp = self._clock.get_time() if self._clock else 0
+        
+        if direction == FrameDirection.DOWNSTREAM and self._next:
+            logger.info(f"Pushing {frame} from {self} to {self._next}")
+            logger.info("internal step1")
+            if self._observer:
+                logger.info("internal step2")
+                await self._observer.on_push_frame(
+                    self, self._next, frame, direction, timestamp
+                )
+                logger.info("internal step3")
+            await self._next.queue_frame(frame, direction)
+            logger.info("internal step4")
+        elif direction == FrameDirection.UPSTREAM and self._prev:
+            logger.info(f"Pushing {frame} upstream from {self} to {self._prev}")
+            logger.info("internal step5")
+            if self._observer:
+                logger.info("internal step6")
+                await self._observer.on_push_frame(
+                    self, self._prev, frame, direction, timestamp
+                )
+                logger.info("internal step7")
+            await self._prev.queue_frame(frame, direction)
+            logger.info("internal step8")
 
     def _check_ready(self, frame: Frame):
         # If we are trying to push a frame but we still have no clock, it means
