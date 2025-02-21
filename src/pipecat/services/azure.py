@@ -6,7 +6,7 @@
 
 import asyncio
 import io
-from typing import AsyncGenerator, Optional, List
+from typing import AsyncGenerator, Optional
 
 import aiohttp
 from loguru import logger
@@ -28,10 +28,6 @@ from pipecat.frames.frames import (
 from pipecat.services.ai_services import ImageGenService, STTService, TTSService
 from pipecat.services.openai import (
     OpenAILLMService,
-    OpenAILLMContext,
-    ChatCompletionMessageParam,
-    ChatCompletionChunk,
-    NOT_GIVEN,
 )
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
@@ -458,38 +454,6 @@ class AzureLLMService(OpenAILLMService):
             return client
         except Exception as e:
             logger.error(f"Error creating Azure client: {str(e)}")
-            raise
-
-    async def get_chat_completions(
-        self, context: OpenAILLMContext, messages: List[ChatCompletionMessageParam]
-    ) -> AsyncStream[ChatCompletionChunk]:
-        """Override parent method to only use parameters supported by Azure."""
-        params = {
-            "model": self.model_name,
-            "stream": True,
-            "messages": messages,
-        }
-
-        # Only add optional parameters if they are set and not default values
-        if context.tools:
-            params["tools"] = context.tools
-        if context.tool_choice:
-            params["tool_choice"] = context.tool_choice
-        if self._settings["temperature"] is not NOT_GIVEN:
-            params["temperature"] = self._settings["temperature"]
-        if self._settings["top_p"] is not NOT_GIVEN:
-            params["top_p"] = self._settings["top_p"]
-        if self._settings["max_tokens"] is not NOT_GIVEN:
-            params["max_tokens"] = self._settings["max_tokens"]
-
-        logger.info(f"xxxxxxAzure chat params: {params}")
-        logger.info(f"xxxxxxAzure client: {self._client}")
-        try:
-            chunks = await self._client.chat.completions.create(**params)
-            logger.info(f"xxxxxxAzure chunks: {chunks}")
-            return chunks
-        except Exception as e:
-            logger.error(f"Error in Azure chat completions: {str(e)}")
             raise
 
 

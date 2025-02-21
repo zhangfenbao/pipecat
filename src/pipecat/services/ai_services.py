@@ -117,10 +117,13 @@ class AIService(FrameProcessor):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, StartFrame):
+            logger.info(f"xxxxxxProcessing StartFrame")
             await self.start(frame)
         elif isinstance(frame, CancelFrame):
+            logger.info(f"xxxxxxProcessing CancelFrame")
             await self.cancel(frame)
         elif isinstance(frame, EndFrame):
+            logger.info(f"xxxxxxProcessing EndFrame")
             await self.stop(frame)
 
     async def process_generator(self, generator: AsyncGenerator[Frame | None, None]):
