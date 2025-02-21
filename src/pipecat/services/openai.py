@@ -180,8 +180,10 @@ class BaseOpenAILLMService(LLMService):
         }
 
         params.update(self._settings["extra"])
-
+        logger.info(f"xxxxxxParams: {params}")
+        logger.info(f"xxxxxxClient: {self._client}")
         chunks = await self._client.chat.completions.create(**params)
+        logger.info(f"xxxxxxChunks: {chunks}")
         return chunks
 
     async def _stream_chat_completions(

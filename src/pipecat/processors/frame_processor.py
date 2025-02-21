@@ -302,10 +302,10 @@ class FrameProcessor:
         pass
 
     async def __internal_push_frame(self, frame: Frame, direction: FrameDirection):
-        logger.info(f"Pushing {frame} from {self} to {self._next}")
-        logger.info(f"Direction: {direction}")
-        logger.info(f"Observer: {self._observer}")
-        logger.info(f"on_push_frame: {self._observer.on_push_frame}")
+        # logger.info(f"Pushing {frame} from {self} to {self._next}")
+        # logger.info(f"Direction: {direction}")
+        # logger.info(f"Observer: {self._observer}")
+        # logger.info(f"on_push_frame: {self._observer.on_push_frame}")
         try:
             timestamp = self._clock.get_time() if self._clock else 0
             
