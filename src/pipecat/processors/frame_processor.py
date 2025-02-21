@@ -304,6 +304,10 @@ class FrameProcessor:
     async def __internal_push_frame(self, frame: Frame, direction: FrameDirection):
         try:
             timestamp = self._clock.get_time() if self._clock else 0
+            logger.info(f"Pushing {frame} from {self} to {self._next}")
+            logger.info(f"Direction: {direction}")
+            logger.info(f"Observer: {self._observer}")
+            logger.info(f"on_push_frame: {self._observer.on_push_frame}")
             if direction == FrameDirection.DOWNSTREAM and self._next:
                 logger.trace(f"Pushing {frame} from {self} to {self._next}")
                 if self._observer:
