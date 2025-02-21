@@ -6,6 +6,7 @@
 
 import asyncio
 from typing import Any, AsyncGenerator
+from loguru import logger
 
 from pipecat.frames.frames import (
     CancelFrame,
@@ -30,8 +31,11 @@ class AsyncGeneratorProcessor(FrameProcessor):
         if isinstance(frame, (CancelFrame, EndFrame)):
             await self._data_queue.put(None)
         else:
+            logger.info("async_generator step1")   
             data = await self._serializer.serialize(frame)
+            logger.info("async_generator step2")
             if data:
+                logger.info("async_generator step3")
                 await self._data_queue.put(data)
 
     async def generator(self) -> AsyncGenerator[Any, None]:
