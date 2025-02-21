@@ -320,7 +320,7 @@ class BaseOpenAILLMService(LLMService):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-
+        logger.info(f"xxxxxxProcessing frame: {frame}")
         context = None
         if isinstance(frame, OpenAILLMContextFrame):
             context: OpenAILLMContext = frame.context
@@ -332,16 +332,24 @@ class BaseOpenAILLMService(LLMService):
                 format=frame.format, size=frame.size, image=frame.image, text=frame.text
             )
         elif isinstance(frame, LLMUpdateSettingsFrame):
+            logger.info(f"xxxxxxProcessing LLMUpdateSettingsFrame")
             await self._update_settings(frame.settings)
         else:
+            logger.info(f"xxxxxxPushing frame: {frame}")
             await self.push_frame(frame, direction)
 
         if context:
+            logger.info(f"step1")
             await self.push_frame(LLMFullResponseStartFrame())
+            logger.info(f"step2")
             await self.start_processing_metrics()
+            logger.info(f"step3")
             await self._process_context(context)
+            logger.info(f"step4")
             await self.stop_processing_metrics()
+            logger.info(f"step5")
             await self.push_frame(LLMFullResponseEndFrame())
+            logger.info(f"step6")
 
 
 @dataclass
