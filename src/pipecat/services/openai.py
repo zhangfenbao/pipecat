@@ -128,6 +128,7 @@ class BaseOpenAILLMService(LLMService):
         params: InputParams = InputParams(),
         **kwargs,
     ):
+        logger.info(f"xxxxxxInitializing BaseOpenAILLMService with model: {model}, api_key: {api_key}, base_url: {base_url}")
         super().__init__(**kwargs)
         self._settings = {
             "frequency_penalty": params.frequency_penalty,
@@ -139,10 +140,13 @@ class BaseOpenAILLMService(LLMService):
             "max_completion_tokens": params.max_completion_tokens,
             "extra": params.extra if isinstance(params.extra, dict) else {},
         }
+        logger.info(f"xxxxxxSettings initialized: {self._settings}")
         self.set_model_name(model)
+        logger.info("xxxxxxCreating client")
         self._client = self.create_client(
             api_key=api_key, base_url=base_url, organization=organization, project=project, **kwargs
         )
+        logger.info("xxxxxxClient created")
 
     def create_client(self, api_key=None, base_url=None, organization=None, project=None, **kwargs):
         return AsyncOpenAI(

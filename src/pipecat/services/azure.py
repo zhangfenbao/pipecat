@@ -417,11 +417,14 @@ class AzureLLMService(OpenAILLMService):
         api_version: str = "2024-09-01-preview",
         **kwargs,
     ):
+        logger.info(f"xxxxxxInitializing AzureLLMService with endpoint: {endpoint}, model: {model}")
         # Initialize variables before calling parent __init__() because that
         # will call create_client() and we need those values there.
         self._endpoint = endpoint
         self._api_version = api_version
+        logger.info("xxxxxxCalling parent __init__")
         super().__init__(api_key=api_key, model=model, **kwargs)
+        logger.info("xxxxxxFinished initialization")
 
     def create_client(self, api_key=None, base_url=None, **kwargs):
         """Create OpenAI-compatible client for Azure OpenAI endpoint."""
